@@ -1,20 +1,28 @@
-// The only data access layer for screens. Today it serves mock data from an
-// in-memory copy; later each function becomes a fetch() to the FastAPI backend
-// with the same signature.
+// The only data access layer for screens.
+//
+// With EXPO_PUBLIC_API_URL set (see .env.local), transactions, cards and
+// statements come from the FastAPI backend in backend/, and what the backend
+// doesn't have yet (budgets, bills, alerts, card rewards, the assistant) is
+// empty. Without it, everything is mock data from an in-memory copy.
+// Summaries and budgets are computed here from the transactions either way.
+
+import Constants from 'expo-constants';
+import { Platform } from 'react-native';
 
 import {
   DEMO_TODAY,
   alerts as seedAlerts,
-  budgets,
-  cards,
-  recurringBills,
-  rewardRules,
+  budgets as seedBudgets,
+  cards as seedCards,
+  recurringBills as seedBills,
+  rewardRules as seedRewardRules,
   transactions as seedTransactions,
 } from '@/data/mock';
 import { lastDayOf, shiftMonth, weekStart } from '@/lib/dates';
 import { formatMoney } from '@/lib/format';
 import type {
   Alert,
+  Budget,
   BudgetStatus,
   Card,
   CardOptimizer,
@@ -29,7 +37,9 @@ import type {
   OptimizerCategory,
   RangePreset,
   RecurringBill,
+  RewardRule,
   SpendSummary,
+  Statement,
   Transaction,
   TransactionFilters,
   WeekTotals,
@@ -37,27 +47,132 @@ import type {
 } from '@/types';
 
 // ---------------------------------------------------------------------------
-// In-memory "database" so edits (recategorize, dismiss) persist for the session.
+// Backend
+
+/** The backend's base URL, or null to serve mock data. */
+function apiUrl(): string | null {
+  const url = process.env.EXPO_PUBLIC_API_URL?.replace(/\/+$/, '');
+  if (!url) return null;
+  // On a phone, localhost is the phone itself: use the computer serving the app instead.
+  const devHost = Constants.expoConfig?.hostUri?.split(':')[0];
+  if (Platform.OS === 'web' || !devHost) return url;
+  return url.replace(/^(https?:\/\/)(localhost|127\.0\.0\.1)(?=[:/]|$)/, `$1${devHost}`);
+}
+
+const API_URL = apiUrl();
+const API_TOKEN = process.env.EXPO_PUBLIC_API_TOKEN;
+const live = API_URL !== null;
+
+/** A failed backend request. `code` is set when a screen can act on it, e.g. 'password_required'. */
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+
+  constructor(status: number, message: string, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}${path}`, {
+      ...init,
+      headers: {
+        Accept: 'application/json',
+        ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
+        ...(init.headers as Record<string, string> | undefined),
+      },
+    });
+  } catch (e) {
+    // Screens only show a spinner, so say where to look.
+    console.warn(`Can't reach the backend at ${API_URL}. Is it running? (${e})`);
+    throw e;
+  }
+  if (!res.ok) {
+    // FastAPI errors are {"detail": "..."} or {"detail": {"code": ..., "message": ...}}.
+    const detail = (await res.json().catch(() => null))?.detail;
+    const message = typeof detail === 'string' ? detail : (detail?.message ?? `${res.status} ${res.statusText}`);
+    throw new ApiError(res.status, message, detail?.code);
+  }
+  return res.json() as Promise<T>;
+}
+
+/** Like request, but null when the backend says 404. */
+async function requestOrNull<T>(path: string): Promise<T | null> {
+  try {
+    return await request<T>(path);
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return null;
+    throw e;
+  }
+}
+
+function query(params: Record<string, string | number | undefined>): string {
+  const parts = Object.entries(params)
+    .filter(([, value]) => value !== undefined && value !== '')
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`);
+  return parts.length ? `?${parts.join('&')}` : '';
+}
+
+// ---------------------------------------------------------------------------
+// In-memory data. With mock data, edits (recategorize, dismiss) persist for the
+// session. With the backend, it only holds what the backend doesn't serve yet,
+// which stays empty.
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
-const db = {
-  transactions: clone(seedTransactions),
-  alerts: clone(seedAlerts),
+const db: {
+  transactions: Transaction[];
+  cards: Card[];
+  budgets: Budget[];
+  recurringBills: RecurringBill[];
+  rewardRules: RewardRule[];
+  alerts: Alert[];
   /** merchant -> category, applied when the user picks "always for this merchant". */
-  merchantRules: {} as Record<string, Category>,
-};
+  merchantRules: Record<string, Category>;
+} = live
+  ? { transactions: [], cards: [], budgets: [], recurringBills: [], rewardRules: [], alerts: [], merchantRules: {} }
+  : {
+      transactions: clone(seedTransactions),
+      cards: seedCards,
+      budgets: seedBudgets,
+      recurringBills: seedBills,
+      rewardRules: seedRewardRules,
+      alerts: clone(seedAlerts),
+      merchantRules: {},
+    };
 
-const delay = (ms = 300) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** Fake network latency for mock data. */
+const delay = (ms = 300) => (live ? Promise.resolve() : new Promise<void>((resolve) => setTimeout(resolve, ms)));
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const sum = (values: number[]) => values.reduce((a, b) => a + b, 0);
+
+let allInFlight: Promise<Transaction[]> | null = null;
+
+/** Every transaction, for the summaries computed below. */
+async function allTransactions(): Promise<Transaction[]> {
+  if (live) {
+    // Screens load several summaries at once; they share one request.
+    allInFlight ??= request<Transaction[]>('/api/transactions').finally(() => (allInFlight = null));
+    return allInFlight;
+  }
+  await delay();
+  return db.transactions;
+}
 
 // ---------------------------------------------------------------------------
 // Dates
 
-/** Demo date. Becomes the real date once data is live. */
+/** The demo date with mock data, the real date with the backend. */
 export function today(): ISODate {
-  return DEMO_TODAY;
+  if (!live) return DEMO_TODAY;
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
 export function currentMonth(): YearMonth {
@@ -92,11 +207,13 @@ function daysBetween({ from, to }: DateRange) {
 // Cards & transactions
 
 export async function getCards(): Promise<Card[]> {
+  if (live) return request<Card[]>('/api/cards');
   await delay();
-  return clone(cards);
+  return clone(db.cards);
 }
 
 export async function getTransactions(filters: TransactionFilters = {}): Promise<Transaction[]> {
+  if (live) return request<Transaction[]>(`/api/transactions${query(filters)}`);
   await delay();
   const search = filters.search?.trim().toLowerCase();
   const result = db.transactions
@@ -118,6 +235,7 @@ export async function getTransactions(filters: TransactionFilters = {}): Promise
 }
 
 export async function getTransaction(id: string): Promise<Transaction | null> {
+  if (live) return requestOrNull<Transaction>(`/api/transactions/${encodeURIComponent(id)}`);
   await delay(150);
   const tx = db.transactions.find((t) => t.id === id);
   return tx ? clone(tx) : null;
@@ -128,6 +246,13 @@ export async function updateCategory(
   category: Category,
   alwaysForMerchant = false,
 ): Promise<CategoryUpdate> {
+  if (live) {
+    return request<CategoryUpdate>(`/api/transactions/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category, alwaysForMerchant }),
+    });
+  }
   await delay();
   const tx = db.transactions.find((t) => t.id === id);
   if (!tx) throw new Error(`Transaction ${id} not found`);
@@ -147,8 +272,8 @@ export async function updateCategory(
 // ---------------------------------------------------------------------------
 // Summaries
 
-function summarize(range: DateRange): SpendSummary {
-  const txs = db.transactions.filter((t) => inRange(t, range));
+function summarize(all: Transaction[], range: DateRange): SpendSummary {
+  const txs = all.filter((t) => inRange(t, range));
   const spent = expenses(txs);
   const totalSpent = sum(spent.map((t) => t.amount));
   const totalIncome = sum(txs.filter((t) => t.isIncome).map((t) => t.amount));
@@ -202,14 +327,16 @@ function summarize(range: DateRange): SpendSummary {
 }
 
 export async function getSpendSummary(range: RangePreset | DateRange = 'this-month'): Promise<SpendSummary> {
-  await delay();
-  return summarize(resolveRange(range));
+  return summarize(await allTransactions(), resolveRange(range));
 }
 
-/** Months that have any transactions, oldest first. */
+/** Every month from the first one with transactions through the current month, oldest first. */
 export async function getMonths(): Promise<YearMonth[]> {
-  await delay(100);
-  return [...new Set(db.transactions.map((t) => t.date.slice(0, 7)))].sort();
+  const txs = await allTransactions();
+  const first = txs.reduce((min, t) => (t.date < min ? t.date : min), today()).slice(0, 7);
+  const months: YearMonth[] = [];
+  for (let m = first; m <= currentMonth(); m = shiftMonth(m, 1)) months.push(m);
+  return months;
 }
 
 /**
@@ -220,7 +347,7 @@ export async function getWeeklySpend(
   range: RangePreset | DateRange = 'last-3-months',
   excludeCategories: Category[] = ['Housing'],
 ): Promise<WeekTotals[]> {
-  await delay();
+  const txs = await allTransactions();
   const resolved = resolveRange(range);
   // Start at the first full week so a partial first week doesn't read as a dip.
   const firstMonday = weekStart(resolved.from) === resolved.from ? resolved.from : addDays(weekStart(resolved.from), 7);
@@ -228,7 +355,7 @@ export async function getWeeklySpend(
   const weeks = new Map<ISODate, number>();
   // Seed every week in range so quiet weeks show as 0 instead of disappearing.
   for (let w = r.from; w <= r.to; w = addDays(w, 7)) weeks.set(w, 0);
-  for (const t of expenses(db.transactions.filter((t) => inRange(t, r)))) {
+  for (const t of expenses(txs.filter((t) => inRange(t, r)))) {
     if (excludeCategories.includes(t.category)) continue;
     const w = weekStart(t.date);
     weeks.set(w, (weeks.get(w) ?? 0) + t.amount);
@@ -242,10 +369,10 @@ function addDays(date: ISODate, days: number): ISODate {
   return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
 }
 
-function budgetStatus(month: YearMonth): BudgetStatus[] {
+function budgetStatus(all: Transaction[], month: YearMonth): BudgetStatus[] {
   const range = { from: `${month}-01`, to: lastDayOf(month) };
-  const spent = expenses(db.transactions.filter((t) => inRange(t, range)));
-  return budgets.map((b) => {
+  const spent = expenses(all.filter((t) => inRange(t, range)));
+  return db.budgets.map((b) => {
     const total = sum(spent.filter((t) => t.category === b.category).map((t) => t.amount));
     return {
       ...b,
@@ -258,8 +385,7 @@ function budgetStatus(month: YearMonth): BudgetStatus[] {
 }
 
 export async function getBudgets(month: YearMonth = currentMonth()): Promise<BudgetStatus[]> {
-  await delay();
-  return budgetStatus(month);
+  return budgetStatus(await allTransactions(), month);
 }
 
 // ---------------------------------------------------------------------------
@@ -267,7 +393,7 @@ export async function getBudgets(month: YearMonth = currentMonth()): Promise<Bud
 
 export async function getRecurringBills(): Promise<RecurringBill[]> {
   await delay();
-  return clone(recurringBills).sort((a, b) => a.nextDue.localeCompare(b.nextDue));
+  return clone(db.recurringBills).sort((a, b) => a.nextDue.localeCompare(b.nextDue));
 }
 
 export async function getAlerts(status?: Alert['status']): Promise<Alert[]> {
@@ -292,7 +418,7 @@ export async function dismissAlert(id: string): Promise<Alert | null> {
 const NOT_CARD_PAYABLE: Category[] = ['Housing', 'Income'];
 
 function ruleFor(cardId: string, category: Category) {
-  const rules = rewardRules.filter((r) => r.cardId === cardId);
+  const rules = db.rewardRules.filter((r) => r.cardId === cardId);
   return rules.find((r) => r.category === category) ?? rules.find((r) => r.category === '*');
 }
 
@@ -316,13 +442,13 @@ function rewardFor(
     eligible = Math.max(0, Math.min(t.amount, rule.cap - used));
     if (commit) usage.set(key, used + t.amount);
   }
-  const base = rewardRules.find((r) => r.cardId === cardId && r.category === '*');
+  const base = db.rewardRules.find((r) => r.cardId === cardId && r.category === '*');
   const fallbackRate = base && base !== rule ? base.ratePercent : 0;
   return (eligible * rule.ratePercent + (t.amount - eligible) * fallbackRate) / 100;
 }
 
-function optimize(range: DateRange): CardOptimizer {
-  const txs = expenses(db.transactions.filter((t) => inRange(t, range)))
+function optimize(all: Transaction[], cards: Card[], range: DateRange): CardOptimizer {
+  const txs = expenses(all.filter((t) => inRange(t, range)))
     .filter((t) => !NOT_CARD_PAYABLE.includes(t.category))
     .sort((a, b) => a.date.localeCompare(b.date));
 
@@ -412,12 +538,54 @@ function optimize(range: DateRange): CardOptimizer {
 }
 
 export async function getCardOptimizer(period: RangePreset | DateRange = 'last-3-months'): Promise<CardOptimizer> {
-  await delay();
-  return optimize(resolveRange(period));
+  const range = resolveRange(period);
+  // The backend has no card reward rules yet, so there is nothing to optimize.
+  if (live) return { range, earned: 0, potential: 0, missed: 0, missedPerYear: 0, byCategory: [], byCard: [], tips: [] };
+  const [txs, cards] = await Promise.all([allTransactions(), getCards()]);
+  return optimize(txs, cards, range);
 }
 
 // ---------------------------------------------------------------------------
-// Assistant (canned answers computed from the data until the agent backend exists)
+// Statements (backend only: mock data has none)
+
+/** A picked file, as expo-document-picker returns it; `file` is set on web. */
+export type UploadFile = { uri: string; name: string; mimeType?: string; file?: File };
+
+const NEEDS_BACKEND = 'Statements need the backend: set EXPO_PUBLIC_API_URL in .env.local.';
+
+/** Newest first. */
+export async function getStatements(): Promise<Statement[]> {
+  return live ? request<Statement[]>('/api/statements') : [];
+}
+
+export async function getStatement(id: string): Promise<Statement | null> {
+  return live ? requestOrNull<Statement>(`/api/statements/${encodeURIComponent(id)}`) : null;
+}
+
+/**
+ * Uploads a PDF statement. The backend reads and categorizes it in the
+ * background: poll getStatement(id) until its status isn't 'processing'.
+ * Throws an ApiError with code 'password_required' when the PDF needs a
+ * password (or the one given was wrong); ask for it and upload again.
+ */
+export async function uploadStatement(file: UploadFile, password?: string): Promise<Statement> {
+  if (!live) throw new Error(NEEDS_BACKEND);
+  const form = new FormData();
+  if (file.file) form.append('file', file.file, file.name);
+  // React Native's fetch uploads a { uri, name, type } part from the file on the device.
+  else form.append('file', { uri: file.uri, name: file.name, type: file.mimeType ?? 'application/pdf' } as unknown as Blob);
+  if (password) form.append('password', password);
+  return request<Statement>('/api/statements', { method: 'POST', body: form });
+}
+
+/** Processes a statement again after it stopped short (status 'incomplete'). */
+export async function processStatement(id: string): Promise<Statement> {
+  if (!live) throw new Error(NEEDS_BACKEND);
+  return request<Statement>(`/api/statements/${encodeURIComponent(id)}/process`, { method: 'POST' });
+}
+
+// ---------------------------------------------------------------------------
+// Assistant (canned answers computed from the mock data until the agent backend exists)
 
 let messageSeq = 0;
 const message = (role: ChatMessage['role'], text: string): ChatMessage => ({
@@ -427,17 +595,17 @@ const message = (role: ChatMessage['role'], text: string): ChatMessage => ({
   createdAt: new Date().toISOString(),
 });
 
-function onTrackAnswer(): string {
+function onTrackAnswer(all: Transaction[]): string {
   const month = currentMonth();
   const dayOfMonth = Number(today().slice(8));
   const daysLeft = Number(lastDayOf(month).slice(8)) - dayOfMonth;
   const prev = shiftMonth(month, -1);
 
-  const thisMonth = summarize({ from: `${month}-01`, to: today() }).totalSpent;
-  const lastMonthToDate = summarize({ from: `${prev}-01`, to: `${prev}-${today().slice(8)}` }).totalSpent;
+  const thisMonth = summarize(all, { from: `${month}-01`, to: today() }).totalSpent;
+  const lastMonthToDate = summarize(all, { from: `${prev}-01`, to: `${prev}-${today().slice(8)}` }).totalSpent;
   const diff = thisMonth - lastMonthToDate;
 
-  const statuses = budgetStatus(month);
+  const statuses = budgetStatus(all, month);
   const hot = statuses.filter((b) => b.ratio >= 0.8).sort((a, b) => b.ratio - a.ratio);
 
   const lines = [
@@ -459,9 +627,9 @@ function onTrackAnswer(): string {
   return lines.join(' ');
 }
 
-function restaurantsAnswer(): string {
+function restaurantsAnswer(all: Transaction[]): string {
   const range = { from: '2026-07-01', to: today() };
-  const food = db.transactions.filter((t) => t.category === 'Food' && !t.isIncome && inRange(t, range));
+  const food = all.filter((t) => t.category === 'Food' && !t.isIncome && inRange(t, range));
   const total = sum(food.map((t) => t.amount));
 
   const months = new Map<YearMonth, number>();
@@ -489,10 +657,11 @@ const FALLBACK =
   'which card to use. Try "Am I on track this month?" or "How much on restaurants since July?"';
 
 export async function sendChatMessage(text: string): Promise<ChatMessage> {
+  if (live) return message('assistant', "The assistant isn't connected to the backend yet.");
   await delay(900);
   const q = text.toLowerCase();
   let answer = FALLBACK;
-  if (q.includes('on track')) answer = onTrackAnswer();
-  else if (/restaurant|eating out|dining|takeout|take-out/.test(q)) answer = restaurantsAnswer();
+  if (q.includes('on track')) answer = onTrackAnswer(db.transactions);
+  else if (/restaurant|eating out|dining|takeout|take-out/.test(q)) answer = restaurantsAnswer(db.transactions);
   return message('assistant', answer);
 }

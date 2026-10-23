@@ -8,20 +8,22 @@ import streamlit as st
 
 from personal_banker.categorize import DEFAULT_WORKBOOK, RulesError, budget_record, categorize_statement, to_xlsx
 from personal_banker.llm import ExtractionError
+from personal_banker.service import budget_workbook
 from personal_banker.store import Library
 from personal_banker.streamlit_support import (
     budget_setup,
-    budget_workbook,
     credentials_notice,
     get_client,
     get_library,
 )
 
-EXPENSE_COLUMNS = ["date", "vendor", "amount", "category", "likely_shared", "statement_description", "review_note", "categorized_by", "statement", "doc"]
-INCOME_COLUMNS = ["date", "source", "amount", "category", "statement_description", "review_note", "categorized_by", "statement", "doc"]
+# app_category is the category picked in the mobile app; it isn't shown here but must survive saving edits.
+EXPENSE_COLUMNS = ["date", "vendor", "amount", "category", "likely_shared", "statement_description", "review_note", "categorized_by", "app_category", "statement", "doc"]
+INCOME_COLUMNS = ["date", "source", "amount", "category", "statement_description", "review_note", "categorized_by", "app_category", "statement", "doc"]
 SKIPPED_COLUMNS = ["date", "statement_description", "amount", "reason", "categorized_by", "statement", "doc"]
 # Columns the page adds for display; they are not stored in budget.json.
 DISPLAY_ONLY = ("statement", "doc")
+HIDDEN = ("doc", "app_category")
 BY_COLUMN = st.column_config.TextColumn(
     "By", width="small", help="rule: your Vendor Rules tab · agent: Claude · you: edited here"
 )
@@ -148,7 +150,7 @@ with expense_tab:
     edited_expenses = st.data_editor(
         base_expenses,
         key=expense_key,
-        column_order=[c for c in EXPENSE_COLUMNS if c not in ("doc", "likely_shared")],
+        column_order=[c for c in EXPENSE_COLUMNS if c not in (*HIDDEN, "likely_shared")],
         hide_index=True,
         disabled=["statement_description", "review_note", "categorized_by", "statement"],
         alt="Categorized expenses",
@@ -175,7 +177,7 @@ with income_tab:
     edited_income = st.data_editor(
         base_income,
         key=income_key,
-        column_order=[c for c in INCOME_COLUMNS if c != "doc"],
+        column_order=[c for c in INCOME_COLUMNS if c not in HIDDEN],
         hide_index=True,
         disabled=["statement_description", "review_note", "categorized_by", "statement"],
         alt="Categorized income",

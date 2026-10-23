@@ -1,29 +1,19 @@
 import hashlib
-from concurrent.futures import as_completed
+import itertools
 
-import anthropic
-import braintrust
 import pandas as pd
 import streamlit as st
-from braintrust import TracedThreadPoolExecutor
 
 from personal_banker.docai import PageResult, render_pdf
 from personal_banker.docai import paddle
-from personal_banker.docai.pipeline import (
-    ENGINE_LABELS,
-    EXTRACTION_ENGINE,
-    Engine,
-    engine_concurrency,
-    extract_page,
-)
+from personal_banker.docai.pipeline import ENGINE_LABELS, EXTRACTION_ENGINE, Engine
 from personal_banker.docai.visualize import draw_layout
-from personal_banker.llm import ExtractionError, start_trace
+from personal_banker.llm import start_trace
 from personal_banker.pipeline import PasswordRequired, StatementError, prepare_pdf
-from personal_banker.categorize import DEFAULT_WORKBOOK, RulesError, budget_record, categorize_statement
-from personal_banker.store import Library, StoredDocument
+from personal_banker.service import process_document
+from personal_banker.store import Library
 from personal_banker.streamlit_support import (
     budget_setup,
-    budget_workbook,
     credentials_notice,
     get_client,
     get_library,
@@ -135,31 +125,6 @@ with st.container(horizontal=True, vertical_alignment="center"):
             icon=":material/download:",
         )
 
-class CategorizeSkipped(Exception):
-    pass
-
-
-def categorize(client: anthropic.Anthropic | None, doc: StoredDocument, engine: Engine) -> StoredDocument:
-    """Add a fully transcribed statement to the budget, with the same workbook the Budget categories page uses.
-
-    Returns the document as stored afterwards: renamed after its statement period.
-    """
-    if client is None:
-        raise CategorizeSkipped("Categorizing uses Claude, and no Anthropic API key is set.")
-    if (found := budget_workbook()) is None:
-        raise CategorizeSkipped(f"No budget workbook found at {DEFAULT_WORKBOOK}.")
-    workbook, workbook_name = found
-    try:
-        setup = budget_setup(workbook)
-    except RulesError as e:
-        raise CategorizeSkipped(f"Problem with the Vendor Rules tab: {e}") from e
-    except (KeyError, StopIteration) as e:
-        raise CategorizeSkipped(f"Couldn't read the budget workbook: {e}") from e
-    return library.save_budget(
-        doc, budget_record(categorize_statement(client, library.markdown(doc, engine), setup), workbook_name)
-    )
-
-
 auto_run = st.session_state.get("auto_run") == doc.id and can_run
 if auto_run:
     del st.session_state.auto_run
@@ -170,44 +135,34 @@ if run or auto_run:
         trace = start_trace("statement", input={"file": doc.name})
     trace.log(metadata={"doc_id": doc.id, "engine": engine, "pages": doc.page_count, "auto_run": auto_run})
     with trace, st.status(f"Processing {doc.name}", expanded=True) as status:
-        failed_pages = 0
         if todo:
             st.write(f"Extracting text from {len(todo)} page{'s' if len(todo) != 1 else ''} with {ENGINE_LABELS[engine]}")
             if engine == "paddleocr-vl":
                 st.caption("The first page waits for the model to load; after that each page takes under a minute.")
             progress = st.progress(0.0)
-            with braintrust.start_span(name="extract_pages", metadata={"engine": engine, "pages": len(todo)}) as span:
-                # The traced pool carries this span into the workers, so each page nests under it.
-                with TracedThreadPoolExecutor(max_workers=engine_concurrency(engine)) as pool:
-                    futures = {pool.submit(extract_page, engine, client, library.page_image(doc, n)): n for n in todo}
-                    for finished, future in enumerate(as_completed(futures), start=1):
-                        page_number = futures[future]
-                        try:
-                            library.save_page_result(doc, future.result(), engine)
-                            st.session_state.page_errors.pop((doc.id, engine, page_number), None)
-                        except (ExtractionError, anthropic.APIError) as e:
-                            st.session_state.page_errors[(doc.id, engine, page_number)] = str(e)
-                            failed_pages += 1
-                        progress.progress(finished / len(todo), text=f"Extracted {finished} of {len(todo)} pages")
-                span.log(metrics={"failed_pages": failed_pages})
+        finished = itertools.count(1)
 
-        if library.markdown(doc, engine) is None:
-            notice = ("error", "Some pages failed, so the statement wasn't added to your budget. Run the analysis again.")
-        elif library.budget(doc) is not None:
-            notice = ("success", "Extraction finished. This statement was already in your budget categories.")
-        else:
-            st.write("Adding the transactions to your budget categories")
-            try:
-                saved = categorize(client, doc, engine)  # categorize_statement adds its own span under this trace
-                renamed = f" Saved as {saved.name}." if saved.name != doc.name else ""
-                notice = ("success", f"Extracted and added to your budget categories.{renamed}")
-            except CategorizeSkipped as e:
-                notice = ("warning", f"Extracted, but not categorized. {e}")
-            except (ExtractionError, anthropic.APIError) as e:
-                notice = ("warning", f"Extracted, but categorizing failed: {e}")
-        trace.log(output={"result": notice[0], "message": notice[1]}, metrics={"failed_pages": failed_pages})
-        status.update(label=f"{doc.name}: {notice[1]}", state="error" if notice[0] == "error" else "complete")
-    st.session_state.viewer_notice = (doc.id, *notice)
+        def on_page(page_number: int, error: Exception | None) -> None:
+            key = (doc.id, engine, page_number)
+            if error is None:
+                st.session_state.page_errors.pop(key, None)
+            else:
+                st.session_state.page_errors[key] = str(error)
+            done = next(finished)
+            progress.progress(done / len(todo), text=f"Extracted {done} of {len(todo)} pages")
+
+        outcome = process_document(
+            library,
+            doc,
+            engine,
+            client,
+            on_page=on_page,
+            on_categorize=lambda: st.write("Adding the transactions to your budget categories"),
+            load=budget_setup,
+        )
+        trace.log(output={"result": outcome.kind, "message": outcome.message}, metrics={"failed_pages": outcome.failed_pages})
+        status.update(label=f"{doc.name}: {outcome.message}", state="error" if outcome.kind == "error" else "complete")
+    st.session_state.viewer_notice = (doc.id, outcome.kind, outcome.message)
     st.rerun()
 elif trace is not None:
     # Uploaded, but the engine can't run here (e.g. Paddle isn't installed): close the trace.

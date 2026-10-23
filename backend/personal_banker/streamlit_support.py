@@ -1,12 +1,11 @@
 """Streamlit helpers shared by the app's pages."""
 
 import os
-from pathlib import Path
 
 import anthropic
 import streamlit as st
 
-from .categorize import DEFAULT_WORKBOOK, BudgetSetup, load_budget_setup
+from .categorize import BudgetSetup, load_budget_setup
 from .llm import make_client
 from .store import Library
 
@@ -29,12 +28,6 @@ def get_client() -> anthropic.Anthropic:
 @st.cache_data(max_entries=4)
 def budget_setup(workbook: bytes) -> BudgetSetup:
     return load_budget_setup(workbook)
-
-
-def budget_workbook() -> tuple[bytes, str] | None:
-    """The budget workbook at DEFAULT_WORKBOOK as (bytes, name), or None if it is missing."""
-    path = Path(DEFAULT_WORKBOOK)
-    return (path.read_bytes(), path.name) if path.exists() else None
 
 
 def has_credentials() -> bool:

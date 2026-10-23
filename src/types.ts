@@ -151,3 +151,19 @@ export type CardOptimizer = {
 };
 
 export type CategoryUpdate = { transaction: Transaction; affectedCount: number };
+
+/** A bank statement uploaded to the backend. */
+export type Statement = {
+  id: string;
+  name: string;
+  uploadedAt: string;
+  pageCount: number;
+  /** Pages read so far. */
+  pagesDone: number;
+  /** processing: being read and categorized; done: in the ledger; incomplete: stopped, see message. */
+  status: 'processing' | 'done' | 'incomplete';
+  /** What is happening now, or why it stopped short. */
+  message: string | null;
+  /** Transactions it added to the ledger, once done. */
+  transactionCount: number | null;
+};

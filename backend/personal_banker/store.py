@@ -12,6 +12,7 @@
         paddleocr-vl/          the same results from the local PaddleOCR-VL engine:
           001.json, 001.md, document.md
         budget.json           categorized expense / income / skipped rows, including the user's edits
+      merchant_rules.json      merchant -> app category, from "always categorize" in the mobile app
 
 The folder is configurable with PERSONAL_BANKER_LIBRARY and is git-ignored.
 """
@@ -180,8 +181,11 @@ class Library:
         return results
 
     def transcribed_pages(self, doc: StoredDocument, engine: Engine = EXTRACTION_ENGINE) -> int:
+        return doc.page_count - len(self.untranscribed_pages(doc, engine))
+
+    def untranscribed_pages(self, doc: StoredDocument, engine: Engine = EXTRACTION_ENGINE) -> list[int]:
         folder = self._results_dir(doc, engine)
-        return sum((folder / f"{n:03d}.json").exists() for n in range(1, doc.page_count + 1))
+        return [n for n in range(1, doc.page_count + 1) if not (folder / f"{n:03d}.json").exists()]
 
     def markdown(self, doc: StoredDocument, engine: Engine = EXTRACTION_ENGINE) -> str | None:
         """The whole document's transcription from `engine`, once every page is done."""
@@ -202,3 +206,13 @@ class Library:
     def budget(self, doc: StoredDocument) -> dict | None:
         path = self._dir(doc) / "budget.json"
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+    # --- App merchant rules --------------------------------------------------------
+
+    def merchant_rules(self) -> dict[str, str]:
+        """Merchant name -> app category; the app applies these to every statement, including future ones."""
+        path = self.root / "merchant_rules.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+    def save_merchant_rules(self, rules: dict[str, str]) -> None:
+        _write_json(self.root / "merchant_rules.json", rules)
