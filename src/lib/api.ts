@@ -2,6 +2,8 @@
 // in-memory copy; later each function becomes a fetch() to the FastAPI backend
 // with the same signature.
 
+import { getClerkInstance } from '@clerk/expo';
+
 import {
   DEMO_TODAY,
   alerts as seedAlerts,
@@ -42,6 +44,41 @@ import type {
   WeekTotals,
   YearMonth,
 } from '@/types';
+
+// ---------------------------------------------------------------------------
+// Real backend (FastAPI). Not built yet, so every function below serves mock data.
+
+/**
+ * Mock data until the backend exists. To switch, give each function a first line like
+ * `if (!USE_MOCK) return apiFetch<Card[]>('/cards');` as its endpoint lands, then set this to false.
+ */
+export const USE_MOCK = true;
+
+/** Backend base URL. On a phone, use your computer's LAN IP, not localhost. */
+const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8000';
+
+/** The signed-in user's Clerk session token (a short-lived JWT), or null when signed out. */
+export async function getAuthToken(): Promise<string | null> {
+  // Called outside React, so read the instance ClerkProvider created instead of useAuth().
+  const clerk = getClerkInstance();
+  return (await clerk?.session?.getToken()) ?? null;
+}
+
+/**
+ * fetch() against the backend with `Authorization: Bearer <session token>`.
+ * Never send a user ID: the backend verifies the token and takes the user from it.
+ */
+export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const token = await getAuthToken();
+  if (!token) throw new Error('Not signed in');
+  const headers = new Headers(init.headers);
+  headers.set('Authorization', `Bearer ${token}`);
+  if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json');
+
+  const res = await fetch(`${API_URL}${path}`, { ...init, headers });
+  if (!res.ok) throw new Error(`${init.method ?? 'GET'} ${path} failed with ${res.status}`);
+  return (await res.json()) as T;
+}
 
 // ---------------------------------------------------------------------------
 // In-memory "database" so edits (recategorize, dismiss, add card, chat) persist for the session.

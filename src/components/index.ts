@@ -1,11 +1,14 @@
 export { AlertBanner } from './AlertBanner';
 export { AlertItem } from './AlertItem';
+export { AuthScreen } from './AuthScreen';
+export { Avatar } from './Avatar';
 export { BudgetRow } from './BudgetRow';
 export { Button } from './Button';
 export { Card } from './Card';
 export { CategoryBadge } from './CategoryBadge';
 export { CategoryDonut } from './CategoryDonut';
 export { Chip } from './Chip';
+export { CodeForm } from './CodeForm';
 export { DetailRow } from './DetailRow';
 export { Divider } from './Divider';
 export { EmptyState } from './EmptyState';

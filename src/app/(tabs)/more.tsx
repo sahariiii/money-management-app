@@ -1,9 +1,11 @@
+import { useClerk, useUser } from '@clerk/expo';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Fragment, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import {
   AlertItem,
+  Avatar,
   BudgetRow,
   Button,
   Card,
@@ -31,7 +33,6 @@ import {
 import { categoryColor, categoryIcon } from '@/lib/categories';
 import { formatMonth, formatShortDate } from '@/lib/dates';
 import { formatMoney } from '@/lib/format';
-import { useSession } from '@/lib/session';
 import type { Category, RecurringBillStatus } from '@/types';
 
 const INTERVAL_LABEL: Record<RecurringBillStatus['interval'], string> = {
@@ -112,7 +113,9 @@ function LimitEditor({ category, value, error, saving, onChange, onSave, onCance
 export default function More() {
   const { isWide, contentWidth } = useLayout();
   const toast = useToast();
-  const { signOut } = useSession();
+  const { signOut } = useClerk();
+  const { user } = useUser();
+  const [signingOut, setSigningOut] = useState(false);
   const month = currentMonth();
 
   const budgets = useAsync(() => getBudgets(month), month);
@@ -151,6 +154,20 @@ export default function More() {
       setSaving(false);
     }
   };
+
+  const onSignOut = async () => {
+    setSigningOut(true);
+    try {
+      // Native: the root layout's guard sends the user to /sign-in. Web: Clerk loads /sign-in.
+      await signOut({ redirectUrl: '/sign-in' });
+    } catch {
+      setSigningOut(false);
+      toast("Couldn't sign out. Check your connection and try again.");
+    }
+  };
+
+  const fullName = user?.fullName?.trim();
+  const email = user?.primaryEmailAddress?.emailAddress ?? '';
 
   const onDismiss = async (id: string) => {
     alerts.setData((alerts.data ?? []).map((a) => (a.id === id ? { ...a, status: 'dismissed' as const } : a)));
@@ -274,8 +291,26 @@ export default function More() {
           />
         </Card>
         <Card style={{ width: half }}>
-          <SectionHeader title="Account" subtitle="Demo account · signed in with Google" />
-          <Button label="Sign out" icon="log-out-outline" variant="danger" style={styles.start} onPress={signOut} />
+          <SectionHeader title="Profile" />
+          <View style={styles.profile}>
+            <Avatar name={fullName || email} size={layout.avatarSize + spacing.lg} />
+            <View style={styles.flex}>
+              <Text style={styles.rowTitle} numberOfLines={1}>
+                {fullName || 'No name yet'}
+              </Text>
+              <Text style={styles.caption} numberOfLines={1}>
+                {email}
+              </Text>
+            </View>
+          </View>
+          <Button
+            label="Sign out"
+            icon="log-out-outline"
+            variant="danger"
+            style={styles.start}
+            loading={signingOut}
+            onPress={onSignOut}
+          />
         </Card>
       </View>
     </Screen>
@@ -300,6 +335,7 @@ const styles = StyleSheet.create({
   },
   editorActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.sm },
   unbudgeted: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  profile: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   bill: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
   billMain: { flex: 1, gap: spacing.xxs },
   billAmounts: { alignItems: 'flex-end', gap: spacing.xxs },

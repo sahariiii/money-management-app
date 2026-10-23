@@ -1,3 +1,4 @@
+import { useUser } from '@clerk/expo';
 import { router } from 'expo-router';
 import { Fragment, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
@@ -42,6 +43,8 @@ function greeting() {
 
 export default function Home() {
   const { isWide, contentWidth } = useLayout();
+  const { user } = useUser();
+  const name = user?.firstName || user?.primaryEmailAddress?.emailAddress;
   const [month, setMonth] = useState(currentMonth());
   const range = monthRange(month, today());
   const isCurrent = month === currentMonth();
@@ -79,7 +82,10 @@ export default function Home() {
     <Screen>
       <View style={[styles.header, isWide && styles.headerWide]}>
         <View style={styles.headerText}>
-          <Text style={styles.greeting}>{greeting()}</Text>
+          <Text style={styles.greeting}>
+            {greeting()}
+            {name ? `, ${name}` : ''}
+          </Text>
           <Text style={styles.subtitle}>
             {isCurrent ? `Here's your month so far (to ${formatShortDate(range.to)})` : "Here's how the month went"}
           </Text>

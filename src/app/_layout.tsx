@@ -1,12 +1,30 @@
+import { ClerkProvider, useAuth } from '@clerk/expo';
+import { tokenCache } from '@clerk/expo/token-cache';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 
-import { ToastProvider } from '@/components';
+import { Loading, ToastProvider } from '@/components';
 import { colors, fontWeight } from '@/constants/theme';
-import { SessionProvider, useSession } from '@/lib/session';
+
+function requirePublishableKey(): string {
+  const key = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
+  if (!key) {
+    throw new Error(
+      'Missing EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY. Add it to money-app/.env (Clerk Dashboard → API keys), ' +
+        'then restart with `npx expo start --clear`.',
+    );
+  }
+  return key;
+}
+
+const publishableKey = requirePublishableKey();
 
 function RootStack() {
-  const { signedIn } = useSession();
+  const { isLoaded, isSignedIn } = useAuth();
+
+  // Clerk first restores the session (secure store on native, browser storage on web).
+  // Rendering routes before that would flash the sign-in screen for signed-in users.
+  if (!isLoaded) return <Loading fullScreen />;
 
   return (
     <Stack
@@ -17,13 +35,16 @@ function RootStack() {
         headerShadowVisible: false,
         contentStyle: { backgroundColor: colors.bg },
       }}>
-      {/* Signed out: sign-in is the only screen, so the app opens on it. It's a direct
-          child (no (auth) layout) so the guard redirects to /sign-in, not /(auth). */}
-      <Stack.Protected guard={!signedIn}>
+      {/* Signed out: only the auth screens. They're direct children (no (auth) layout), and
+          signed-in users who land here are sent home. */}
+      <Stack.Protected guard={!isSignedIn} redirectTo="/">
         <Stack.Screen name="(auth)/sign-in" options={{ headerShown: false }} />
+        <Stack.Screen name="(auth)/sign-up" options={{ headerShown: false }} />
+        <Stack.Screen name="sso-callback" options={{ headerShown: false }} />
       </Stack.Protected>
 
-      <Stack.Protected guard={signedIn}>
+      {/* Signed in: the tabs and every modal. Signed-out visits go to /sign-in. */}
+      <Stack.Protected guard={isSignedIn} redirectTo="/sign-in">
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen
           name="upload-statement"
@@ -39,11 +60,11 @@ function RootStack() {
 
 export default function RootLayout() {
   return (
-    <SessionProvider>
+    <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
       <ToastProvider>
         <StatusBar style="dark" />
         <RootStack />
       </ToastProvider>
-    </SessionProvider>
+    </ClerkProvider>
   );
 }
