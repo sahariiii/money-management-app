@@ -1,6 +1,7 @@
 """Shared Claude call used by every agent in the pipeline."""
 
 import base64
+import functools
 import os
 from dataclasses import dataclass
 
@@ -35,6 +36,28 @@ class ExtractionError(RuntimeError):
     pass
 
 
+@functools.cache
+def init_tracing() -> bool:
+    """Start logging spans to the BRAINTRUST_PROJECT project; returns whether tracing is on.
+
+    Only when BRAINTRUST_API_KEY is set. Runs once per process; the local
+    PaddleOCR-VL engine calls it too, since it never creates a Claude client.
+    """
+    if not os.environ.get("BRAINTRUST_API_KEY"):
+        return False
+    braintrust.init_logger(project=BRAINTRUST_PROJECT)
+    return True
+
+
+def start_trace(name: str, **event) -> braintrust.Span:
+    """Root span for one end-to-end run; spans and Claude calls made while it is current nest under it.
+
+    Without BRAINTRUST_API_KEY it is a no-op span, so callers needn't check.
+    """
+    init_tracing()
+    return braintrust.start_span(name=name, **event)
+
+
 def make_client(api_key: str | None = None) -> anthropic.Anthropic:
     """Client for every pipeline call. With no `api_key`, the SDK reads ANTHROPIC_API_KEY.
 
@@ -48,10 +71,7 @@ def make_client(api_key: str | None = None) -> anthropic.Anthropic:
     if workspace_id := os.environ.get("ANTHROPIC_WORKSPACE_ID"):
         headers["anthropic-workspace-id"] = workspace_id
     client = anthropic.Anthropic(api_key=api_key, default_headers=headers)
-    if not os.environ.get("BRAINTRUST_API_KEY"):
-        return client
-    braintrust.init_logger(project=BRAINTRUST_PROJECT)
-    return braintrust.wrap_anthropic(client)
+    return braintrust.wrap_anthropic(client) if init_tracing() else client
 
 
 @dataclass

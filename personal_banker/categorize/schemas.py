@@ -34,6 +34,13 @@ class OtherLine(BaseModel):
 
 class ExtractedStatement(BaseModel):
     account_type: Literal["bank_account", "credit_card", "other"]
+    institution: str | None = Field(description="The bank or card issuer as printed, e.g. 'RBC Royal Bank'; null if not printed.")
+    account_name: str | None = Field(
+        description="The account or card product as printed, e.g. 'RBC Advantage Banking' or 'Visa Infinite'. "
+        "Never the account or card number. Null if not printed."
+    )
+    period_start: str | None = Field(description="First day of the statement period as YYYY-MM-DD; null if not printed.")
+    period_end: str | None = Field(description="Last day of the statement period as YYYY-MM-DD; null if not printed.")
     transactions: list[StatementTransaction] = Field(description="Every transaction row, in the order printed.")
     other_lines: list[OtherLine] = Field(
         description="Rows in the transaction tables that are not transactions: opening/closing or carried-forward "

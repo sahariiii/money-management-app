@@ -1,14 +1,23 @@
 import hashlib
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 
 import anthropic
+import braintrust
 import pandas as pd
 import streamlit as st
+from braintrust import TracedThreadPoolExecutor
 
 from personal_banker.docai import PageResult, render_pdf
-from personal_banker.docai.pipeline import DEFAULT_CONCURRENCY, process_page
+from personal_banker.docai import paddle
+from personal_banker.docai.pipeline import (
+    ENGINE_LABELS,
+    EXTRACTION_ENGINE,
+    Engine,
+    engine_concurrency,
+    extract_page,
+)
 from personal_banker.docai.visualize import draw_layout
-from personal_banker.llm import ExtractionError
+from personal_banker.llm import ExtractionError, start_trace
 from personal_banker.pipeline import PasswordRequired, StatementError, prepare_pdf
 from personal_banker.categorize import DEFAULT_WORKBOOK, RulesError, budget_record, categorize_statement
 from personal_banker.store import Library, StoredDocument
@@ -18,14 +27,15 @@ from personal_banker.streamlit_support import (
     credentials_notice,
     get_client,
     get_library,
+    has_credentials,
 )
 
 
 @st.cache_data(max_entries=8)
-def load_results(doc_id: str, transcribed: int) -> dict[int, PageResult]:
+def load_results(doc_id: str, engine: Engine, transcribed: int) -> dict[int, PageResult]:
     # `transcribed` is part of the cache key, so the cache refreshes whenever a page is added.
     library = get_library()
-    return library.page_results(library.get(doc_id))
+    return library.page_results(library.get(doc_id), engine)
 
 
 def escape_math(markdown: str) -> str:
@@ -38,14 +48,18 @@ if "page_errors" not in st.session_state:
     st.session_state.page_errors = {}  # (document id, page number) -> error message from the last run
 
 st.title("Document viewer")
-st.caption(
-    "Each page is rendered to an image, Claude detects its layout, then transcribes it using that layout. "
-    f"Everything is saved under {library.root}/."
-)
+if EXTRACTION_ENGINE == "claude":
+    how = "Claude detects its layout, then transcribes it using that layout"
+else:
+    how = "PaddleOCR-VL detects its layout and transcribes it locally on your GPU"
+st.caption(f"Each page is rendered to an image, then {how}. Everything is saved under {library.root}/.")
 
 # --- Add a document -----------------------------------------------------------
 
 upload = st.file_uploader("Add a document (PDF)", type="pdf")
+# One Braintrust trace per statement: rendering the upload, every page's extraction and
+# the categorization nest under it, so its duration and cost cover the whole run.
+trace = None
 if upload is not None:
     raw = upload.getvalue()
     digest = hashlib.sha256(raw).hexdigest()
@@ -64,8 +78,11 @@ if upload is not None:
             except StatementError as e:
                 st.error(str(e), title=upload.name)
                 st.stop()
-            with st.spinner("Rendering pages"):
+            # Started after any password prompt, so time spent typing it isn't counted.
+            trace = start_trace("statement", input={"file": upload.name, "bytes": len(raw)})
+            with trace.start_span(name="render_and_save") as span, st.spinner("Rendering pages"):
                 doc = library.add(upload.name, raw, render_pdf(pdf))
+                span.log(metrics={"pages": doc.page_count})
             st.session_state.auto_run = doc.id  # extract and categorize a new statement right away
         st.session_state.last_upload = digest
         st.session_state.viewer_doc = doc.id
@@ -84,13 +101,22 @@ doc = docs[
     )
 ]
 
-results = load_results(doc.id, library.transcribed_pages(doc))
-errors = {n: msg for (d, n), msg in st.session_state.page_errors.items() if d == doc.id and n not in results}
+engine: Engine = EXTRACTION_ENGINE
+
+results = load_results(doc.id, engine, library.transcribed_pages(doc, engine))
+errors = {n: msg for (d, e, n), msg in st.session_state.page_errors.items() if (d, e) == (doc.id, engine) and n not in results}
 todo = [n for n in range(1, doc.page_count + 1) if n not in results]
 
 # --- Run the pipeline -------------------------------------------------------
 
-has_credentials = credentials_notice()
+if engine == "claude":
+    can_run = credentials_notice()
+else:
+    can_run = paddle.is_available()
+    if not can_run:
+        st.info("Install it with `uv sync --extra paddle`, then restart the app.", title="PaddleOCR-VL isn't installed")
+    elif not has_credentials():
+        st.caption("No Anthropic API key found: PaddleOCR-VL extraction works, but statements won't be categorized.")
 with st.container(horizontal=True, vertical_alignment="center"):
     run = st.button(
         f"Analyse {len(todo)} page{'s' if len(todo) != 1 else ''}"
@@ -98,13 +124,13 @@ with st.container(horizontal=True, vertical_alignment="center"):
         else f"Analyse all {doc.page_count} pages",
         icon=":material/play_arrow:",
         type="primary",
-        disabled=not todo or not has_credentials,
+        disabled=not todo or not can_run,
     )
-    if (markdown := library.markdown(doc)) is not None:
+    if (markdown := library.markdown(doc, engine)) is not None:
         st.download_button(
             "Download transcription (Markdown)",
             markdown,
-            file_name=f"{doc.name.removesuffix('.pdf')}.md",
+            file_name=f"{doc.name.removesuffix('.pdf')}{'' if engine == 'claude' else f'.{engine}'}.md",
             mime="text/markdown",
             icon=":material/download:",
         )
@@ -113,8 +139,13 @@ class CategorizeSkipped(Exception):
     pass
 
 
-def categorize(client: anthropic.Anthropic, doc: StoredDocument) -> None:
-    """Add a fully transcribed statement to the budget, with the same workbook the Budget categories page uses."""
+def categorize(client: anthropic.Anthropic | None, doc: StoredDocument, engine: Engine) -> StoredDocument:
+    """Add a fully transcribed statement to the budget, with the same workbook the Budget categories page uses.
+
+    Returns the document as stored afterwards: renamed after its statement period.
+    """
+    if client is None:
+        raise CategorizeSkipped("Categorizing uses Claude, and no Anthropic API key is set.")
     if (found := budget_workbook()) is None:
         raise CategorizeSkipped(f"No budget workbook found at {DEFAULT_WORKBOOK}.")
     workbook, workbook_name = found
@@ -124,45 +155,64 @@ def categorize(client: anthropic.Anthropic, doc: StoredDocument) -> None:
         raise CategorizeSkipped(f"Problem with the Vendor Rules tab: {e}") from e
     except (KeyError, StopIteration) as e:
         raise CategorizeSkipped(f"Couldn't read the budget workbook: {e}") from e
-    library.save_budget(doc, budget_record(categorize_statement(client, library.markdown(doc), setup), workbook_name))
+    return library.save_budget(
+        doc, budget_record(categorize_statement(client, library.markdown(doc, engine), setup), workbook_name)
+    )
 
 
-auto_run = st.session_state.get("auto_run") == doc.id and has_credentials
+auto_run = st.session_state.get("auto_run") == doc.id and can_run
 if auto_run:
     del st.session_state.auto_run
 if run or auto_run:
-    client = get_client()
-    with st.status(f"Processing {doc.name}", expanded=True) as status:
+    client = get_client() if has_credentials() else None
+    # Pressing "Analyse" on a stored statement starts its own trace, without the upload step.
+    if trace is None:
+        trace = start_trace("statement", input={"file": doc.name})
+    trace.log(metadata={"doc_id": doc.id, "engine": engine, "pages": doc.page_count, "auto_run": auto_run})
+    with trace, st.status(f"Processing {doc.name}", expanded=True) as status:
+        failed_pages = 0
         if todo:
-            st.write(f"Extracting text from {len(todo)} page{'s' if len(todo) != 1 else ''}")
+            st.write(f"Extracting text from {len(todo)} page{'s' if len(todo) != 1 else ''} with {ENGINE_LABELS[engine]}")
+            if engine == "paddleocr-vl":
+                st.caption("The first page waits for the model to load; after that each page takes under a minute.")
             progress = st.progress(0.0)
-            with ThreadPoolExecutor(max_workers=DEFAULT_CONCURRENCY) as pool:
-                futures = {pool.submit(process_page, client, library.page_image(doc, n)): n for n in todo}
-                for finished, future in enumerate(as_completed(futures), start=1):
-                    page_number = futures[future]
-                    try:
-                        library.save_page_result(doc, future.result())
-                        st.session_state.page_errors.pop((doc.id, page_number), None)
-                    except (ExtractionError, anthropic.APIError) as e:
-                        st.session_state.page_errors[(doc.id, page_number)] = str(e)
-                    progress.progress(finished / len(todo), text=f"Extracted {finished} of {len(todo)} pages")
+            with braintrust.start_span(name="extract_pages", metadata={"engine": engine, "pages": len(todo)}) as span:
+                # The traced pool carries this span into the workers, so each page nests under it.
+                with TracedThreadPoolExecutor(max_workers=engine_concurrency(engine)) as pool:
+                    futures = {pool.submit(extract_page, engine, client, library.page_image(doc, n)): n for n in todo}
+                    for finished, future in enumerate(as_completed(futures), start=1):
+                        page_number = futures[future]
+                        try:
+                            library.save_page_result(doc, future.result(), engine)
+                            st.session_state.page_errors.pop((doc.id, engine, page_number), None)
+                        except (ExtractionError, anthropic.APIError) as e:
+                            st.session_state.page_errors[(doc.id, engine, page_number)] = str(e)
+                            failed_pages += 1
+                        progress.progress(finished / len(todo), text=f"Extracted {finished} of {len(todo)} pages")
+                span.log(metrics={"failed_pages": failed_pages})
 
-        if library.markdown(doc) is None:
+        if library.markdown(doc, engine) is None:
             notice = ("error", "Some pages failed, so the statement wasn't added to your budget. Run the analysis again.")
         elif library.budget(doc) is not None:
             notice = ("success", "Extraction finished. This statement was already in your budget categories.")
         else:
             st.write("Adding the transactions to your budget categories")
             try:
-                categorize(client, doc)
-                notice = ("success", "Extracted and added to your budget categories.")
+                saved = categorize(client, doc, engine)  # categorize_statement adds its own span under this trace
+                renamed = f" Saved as {saved.name}." if saved.name != doc.name else ""
+                notice = ("success", f"Extracted and added to your budget categories.{renamed}")
             except CategorizeSkipped as e:
                 notice = ("warning", f"Extracted, but not categorized. {e}")
             except (ExtractionError, anthropic.APIError) as e:
                 notice = ("warning", f"Extracted, but categorizing failed: {e}")
+        trace.log(output={"result": notice[0], "message": notice[1]}, metrics={"failed_pages": failed_pages})
         status.update(label=f"{doc.name}: {notice[1]}", state="error" if notice[0] == "error" else "complete")
     st.session_state.viewer_notice = (doc.id, *notice)
     st.rerun()
+elif trace is not None:
+    # Uploaded, but the engine can't run here (e.g. Paddle isn't installed): close the trace.
+    trace.log(output={"result": "not_run"})
+    trace.end()
 
 if (notice := st.session_state.get("viewer_notice")) and notice[0] == doc.id:
     del st.session_state.viewer_notice
@@ -240,10 +290,13 @@ with text_col:
 # --- Layout details ---------------------------------------------------------
 
 st.subheader("Layout regions")
-st.caption(
-    f"{len(regions)} regions · {layout.column_count} column(s) · language {layout.language or 'unknown'} · "
-    f"rotation {layout.rotation}°. Select a row to highlight the region."
-)
+if engine == "claude":
+    st.caption(
+        f"{len(regions)} regions · {layout.column_count} column(s) · language {layout.language or 'unknown'} · "
+        f"rotation {layout.rotation}°. Select a row to highlight the region."
+    )
+else:
+    st.caption(f"{len(regions)} regions. Select a row to highlight the region.")
 st.dataframe(
     pd.DataFrame(
         [
@@ -272,11 +325,13 @@ st.dataframe(
         "bbox": "Box (px)",
     },
 )
-if layout.notes:
-    st.caption(f"Layout notes: {layout.notes}")
-
-st.caption(
-    f"Model {result.layout.model} · layout: {result.layout.input_tokens + result.layout.cache_write_tokens:,} in / "
-    f"{result.layout.output_tokens:,} out · transcription: {result.transcription.input_tokens:,} in "
-    f"({result.transcription.cache_read_tokens:,} read from cache) / {result.transcription.output_tokens:,} out"
-)
+if engine == "claude":
+    if layout.notes:
+        st.caption(f"Layout notes: {layout.notes}")
+    st.caption(
+        f"Model {result.layout.model} · layout: {result.layout.input_tokens + result.layout.cache_write_tokens:,} in / "
+        f"{result.layout.output_tokens:,} out · transcription: {result.transcription.input_tokens:,} in "
+        f"({result.transcription.cache_read_tokens:,} read from cache) / {result.transcription.output_tokens:,} out"
+    )
+else:
+    st.caption(f"Model {result.layout.model}, run locally. It gives no per-region confidence, so every region shows as legible.")

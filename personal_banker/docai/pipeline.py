@@ -2,12 +2,13 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 import anthropic
 import braintrust
 from braintrust import TracedThreadPoolExecutor
 
-from ..llm import CallResult
+from ..llm import CallResult, init_tracing
 from .agents import analyse_page_layout, transcribe_page
 from .render import PageImage, render_pdf
 from .schemas import PageLayout, PageTranscription
@@ -15,6 +16,14 @@ from .schemas import PageLayout, PageTranscription
 # Pages are independent, so several run at once; each page's two calls stay
 # sequential because the second needs the first's layout.
 DEFAULT_CONCURRENCY = 4
+
+# "claude": the two Claude passes below. "paddleocr-vl": the local model in paddle.py.
+Engine = Literal["claude", "paddleocr-vl"]
+ENGINE_LABELS: dict[Engine, str] = {"claude": "Claude", "paddleocr-vl": "PaddleOCR-VL (local)"}
+
+# The engine the app, the CLI and the library use. Change it here to switch;
+# "paddleocr-vl" needs `uv sync --extra paddle`.
+EXTRACTION_ENGINE: Engine = "paddleocr-vl"
 
 
 @dataclass
@@ -44,10 +53,25 @@ class DocumentResult:
 
 @braintrust.traced(notrace_io=True)
 def process_page(client: anthropic.Anthropic, page: PageImage) -> PageResult:
-    braintrust.current_span().log(metadata={"page_number": page.page_number})
+    braintrust.current_span().log(metadata={"engine": "claude", "page_number": page.page_number})
     layout = analyse_page_layout(client, page)
     transcription = transcribe_page(client, page, layout.output)
     return PageResult(page, layout, transcription)
+
+
+def extract_page(engine: Engine, client: anthropic.Anthropic | None, page: PageImage) -> PageResult:
+    """Run one page through `engine`; `client` is only used (and required) for Claude."""
+    if engine == "paddleocr-vl":
+        from . import paddle  # imported lazily: the Paddle stack is an optional extra
+
+        init_tracing()  # Claude runs start it in make_client; this engine has no client
+        return paddle.process_page(page)
+    return process_page(client, page)
+
+
+def engine_concurrency(engine: Engine) -> int:
+    # The local model serialises pages on the GPU, so extra threads would only wait.
+    return 1 if engine == "paddleocr-vl" else DEFAULT_CONCURRENCY
 
 
 @braintrust.traced(notrace_io=True)

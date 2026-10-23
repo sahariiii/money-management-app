@@ -2,13 +2,16 @@
 
     library/
       <name>-<sha8>/
-        meta.json              file name, hash, when added, page image info
+        meta.json              display name (renamed to the statement period once categorized),
+                               original file name, hash, when added, page image info
         statement.pdf          the upload, byte for byte
         pages/001.png          rendered page images
         pages/001.json         layout + transcription (with token usage)
         pages/001.md           the page's transcription
         document.md            all pages, written once every page is transcribed
-        budget.json            categorized expense / income / skipped rows, including the user's edits
+        paddleocr-vl/          the same results from the local PaddleOCR-VL engine:
+          001.json, 001.md, document.md
+        budget.json           categorized expense / income / skipped rows, including the user's edits
 
 The folder is configurable with PERSONAL_BANKER_LIBRARY and is git-ignored.
 """
@@ -17,14 +20,14 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
 
-from .docai.pipeline import DocumentResult, PageResult
+from .docai.pipeline import EXTRACTION_ENGINE, DocumentResult, Engine, PageResult
 from .docai.render import PageImage
 from .docai.schemas import PageLayout, PageTranscription
 from .llm import CallResult
@@ -44,10 +47,11 @@ class StoredPage:
 @dataclass(frozen=True)
 class StoredDocument:
     id: str  # folder name
-    name: str  # original file name
+    name: str  # display name: the upload's file name until categorizing renames it after its period
     sha256: str
     added: str  # ISO timestamp
     pages: tuple[StoredPage, ...]
+    original_name: str | None = None  # the upload's file name, once the document has been renamed
 
     @property
     def page_count(self) -> int:
@@ -86,6 +90,14 @@ class Library:
     def _dir(self, doc: StoredDocument) -> Path:
         return self.root / doc.id
 
+    def _results_dir(self, doc: StoredDocument, engine: Engine) -> Path:
+        # Claude's results stay in pages/ next to the images, where they were before engines existed.
+        return self._dir(doc) / ("pages" if engine == "claude" else engine)
+
+    def _document_md(self, doc: StoredDocument, engine: Engine) -> Path:
+        folder = self._dir(doc) if engine == "claude" else self._results_dir(doc, engine)
+        return folder / "document.md"
+
     # --- Documents -------------------------------------------------------------
 
     def documents(self) -> list[StoredDocument]:
@@ -115,8 +127,19 @@ class Library:
         _write(folder / "statement.pdf", pdf_bytes)
         doc = StoredDocument(doc_id, name, sha256, datetime.now().isoformat(timespec="seconds"), tuple(stored_pages))
         # meta.json goes last: a folder without it is an interrupted add and is ignored.
-        _write_json(folder / "meta.json", {**asdict(doc), "pages": [asdict(p) for p in stored_pages]})
+        self._write_meta(doc)
         return doc
+
+    def rename(self, doc: StoredDocument, name: str) -> StoredDocument:
+        """Show the document as `name`. The folder keeps its id; the upload's name is kept as original_name."""
+        if name == doc.name:
+            return doc
+        renamed = replace(doc, name=name, original_name=doc.original_name or doc.name)
+        self._write_meta(renamed)
+        return renamed
+
+    def _write_meta(self, doc: StoredDocument) -> None:
+        _write_json(self._dir(doc) / "meta.json", {**asdict(doc), "pages": [asdict(p) for p in doc.pages]})
 
     def _read_meta(self, path: Path) -> StoredDocument:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -132,21 +155,21 @@ class Library:
     def page_images(self, doc: StoredDocument) -> list[PageImage]:
         return [self.page_image(doc, n) for n in range(1, doc.page_count + 1)]
 
-    def save_page_result(self, doc: StoredDocument, result: PageResult) -> None:
-        stem = self._dir(doc) / "pages" / f"{result.image.page_number:03d}"
+    def save_page_result(self, doc: StoredDocument, result: PageResult, engine: Engine = EXTRACTION_ENGINE) -> None:
+        stem = self._results_dir(doc, engine) / f"{result.image.page_number:03d}"
         _write_json(
             stem.with_suffix(".json"),
             {"layout": _dump_call(result.layout), "transcription": _dump_call(result.transcription)},
         )
         _write(stem.with_suffix(".md"), result.markdown)
-        results = self.page_results(doc)
+        results = self.page_results(doc, engine)
         if len(results) == doc.page_count:
-            _write(self._dir(doc) / "document.md", DocumentResult([results[n] for n in sorted(results)]).markdown)
+            _write(self._document_md(doc, engine), DocumentResult([results[n] for n in sorted(results)]).markdown)
 
-    def page_results(self, doc: StoredDocument) -> dict[int, PageResult]:
+    def page_results(self, doc: StoredDocument, engine: Engine = EXTRACTION_ENGINE) -> dict[int, PageResult]:
         results: dict[int, PageResult] = {}
         for n in range(1, doc.page_count + 1):
-            path = self._dir(doc) / "pages" / f"{n:03d}.json"
+            path = self._results_dir(doc, engine) / f"{n:03d}.json"
             if path.exists():
                 data = json.loads(path.read_text(encoding="utf-8"))
                 results[n] = PageResult(
@@ -156,19 +179,25 @@ class Library:
                 )
         return results
 
-    def transcribed_pages(self, doc: StoredDocument) -> int:
-        return sum((self._dir(doc) / "pages" / f"{n:03d}.json").exists() for n in range(1, doc.page_count + 1))
+    def transcribed_pages(self, doc: StoredDocument, engine: Engine = EXTRACTION_ENGINE) -> int:
+        folder = self._results_dir(doc, engine)
+        return sum((folder / f"{n:03d}.json").exists() for n in range(1, doc.page_count + 1))
 
-    def markdown(self, doc: StoredDocument) -> str | None:
-        """The whole document's transcription, once every page is done."""
-        path = self._dir(doc) / "document.md"
+    def markdown(self, doc: StoredDocument, engine: Engine = EXTRACTION_ENGINE) -> str | None:
+        """The whole document's transcription from `engine`, once every page is done."""
+        path = self._document_md(doc, engine)
         return path.read_text(encoding="utf-8") if path.exists() else None
 
     # --- Budget rows -------------------------------------------------------------
 
-    def save_budget(self, doc: StoredDocument, budget: dict) -> None:
-        """`budget` holds 'expenses', 'income' and 'skipped' row lists plus provenance fields."""
+    def save_budget(self, doc: StoredDocument, budget: dict) -> StoredDocument:
+        """`budget` holds 'expenses', 'income' and 'skipped' row lists plus provenance fields.
+
+        When it has a 'title' (the statement's period and account), the document is
+        renamed to it; returns the document as now stored.
+        """
         _write_json(self._dir(doc) / "budget.json", budget)
+        return self.rename(doc, f"{title}.pdf") if (title := budget.get("title")) else doc
 
     def budget(self, doc: StoredDocument) -> dict | None:
         path = self._dir(doc) / "budget.json"

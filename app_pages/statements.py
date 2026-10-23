@@ -23,6 +23,7 @@ for doc in library.documents():
     saved.append(
         {
             "statement": doc.name,
+            "uploaded_as": doc.original_name or doc.name,
             "first": dates.min() if len(dates) else None,
             "last": dates.max() if len(dates) else None,
             "transactions": len(rows) if budget else None,
@@ -42,6 +43,7 @@ st.dataframe(
     alt="E-statements saved in the library with their transaction date ranges",
     column_config={
         "statement": st.column_config.TextColumn("Statement", width="large"),
+        "uploaded_as": "Uploaded as",
         "first": st.column_config.DateColumn("First transaction"),
         "last": st.column_config.DateColumn("Last transaction"),
         "transactions": st.column_config.NumberColumn("Transactions", width="small"),

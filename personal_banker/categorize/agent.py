@@ -6,6 +6,7 @@ Dates, amounts and descriptions always come from the extraction, so neither
 the rules nor the second call can change them.
 """
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -32,7 +33,9 @@ markers, and whether it is a bank account or a credit card).
 the year from the statement period when a row omits it.
 - Copy each description as printed, joining wrapped lines with a space.
 - Put opening/closing or carried-forward balances, subtotals and summary lines \
-in other_lines, not in transactions, so nothing disappears silently."""
+in other_lines, not in transactions, so nothing disappears silently.
+- Also give the bank, the account or card name and the statement period as \
+printed in the statement header (e.g. 'From July 23, 2026 to August 21, 2026')."""
 
 DECISION_INSTRUCTIONS = """\
 You sort bank and credit-card transactions into a personal budget. Each \
@@ -216,13 +219,33 @@ def categorize_statement(
     return result
 
 
+def statement_title(statement: ExtractedStatement) -> str | None:
+    """A file name that says what the statement covers, e.g.
+    '2026-07-23 to 2026-08-21 - RBC Advantage Banking'. Dates lead so names sort by time.
+
+    Uses the printed statement period, else the first and last transaction dates;
+    None when there are no dates at all.
+    """
+    dates = sorted(t.date for t in statement.transactions)
+    start = statement.period_start or (dates[0] if dates else None)
+    end = statement.period_end or (dates[-1] if dates else None)
+    if not start or not end:
+        return None
+    account = " ".join(dict.fromkeys(p for p in (statement.institution, statement.account_name) if p))
+    title = f"{start} to {end}" + (f" - {account}" if account else "")
+    # Keep it a valid file name on Windows too.
+    return re.sub(r"\s+", " ", re.sub(r'[<>:"/\\|?*]+', " ", title)).strip()
+
+
 def budget_record(result: CategorizationResult, workbook_name: str) -> dict:
     """Plain rows plus provenance, as stored in the library's budget.json.
 
     Rows are kept as plain dicts rather than a per-workbook model, so they
-    still load after the user renames or removes a category.
+    still load after the user renames or removes a category. `title` names the
+    statement after its period; the library renames the document to it.
     """
     return {
+        "title": statement_title(result.calls[0].output),
         "workbook": workbook_name,
         "categorized_at": datetime.now().isoformat(timespec="seconds"),
         "model": result.calls[0].model,
