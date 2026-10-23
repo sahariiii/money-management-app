@@ -52,8 +52,11 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
 - Email/password uses the current hooks: `useSignIn()` / `useSignUp()` return
   `{ signIn|signUp, errors, fetchStatus }`, methods return `{ error }`, finish with
   `finalize({ navigate })`. Never the legacy `signIn.create` + `prepareFirstFactor` + `setActive`.
-  Sign-in handles `needs_client_trust` (new-device email code). Sign-up renders
-  `<View nativeID="clerk-captcha" />`.
+  Sign-in handles `needs_client_trust` (new-device email code). Sign-up collects first name, last
+  name, email and password (the greeting uses `user.firstName`); email verification is off in Clerk,
+  so it usually completes at once, with the emailed-code step kept as a fallback. Sign-up renders
+  `<View nativeID="clerk-captcha" />`. Both auth screens clear a leftover (e.g. pending) session on
+  arrival, or Clerk rejects new attempts with `session_exists`.
 - Google = `useSSO()` from `@clerk/expo` (browser OAuth: Custom Tab on Android, popup on web), then
   `setActive({ session, navigate })`. Don't call `WebBrowser.maybeCompleteAuthSession()`;
   ClerkProvider does it on web.
@@ -63,11 +66,11 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
   Never send a user ID: the FastAPI backend must verify the token and take the user from it.
 
 ## Gotchas
-- Clerk dashboard settings matter (instance logical-sole-3210, dev): sign-up only completes with
-  email + password if phone number and username are NOT required (User & authentication).
-  Passwords need 15+ characters on this instance. Google in Expo Go only creates a session if the
-  redirect URL (`exp://<LAN-IP>:8081/--/sso-callback`, logged in the Metro console in dev) is
-  allowlisted under Native applications. Test emails: `anything+clerk_test@example.com`, code 424242.
+- Clerk dashboard settings matter (instance logical-sole-3210, dev): phone number and username are
+  off, email verification at sign-up is off, first/last name are on. Turning a requirement back on
+  makes sign-up end in a "missing fields" message. Passwords need 15+ characters on this instance.
+  Google in Expo Go only creates a session if the redirect URL (`exp://<LAN-IP>:8081/--/sso-callback`,
+  logged in the Metro console in dev) is allowlisted under Native applications.
 - Typed routes (.expo/types/router.d.ts) can go stale while the dev server runs on Windows:
   new non-route files under src/ show up as routes like `/../lib/api` and tsc rejects real hrefs.
   Fix: stop the server, delete .expo/types, restart `npx expo start`.

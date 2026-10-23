@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { AlertBanner, AuthScreen, Button, CodeForm, TextField, useToast } from '@/components';
-import { colors, typography } from '@/constants/theme';
+import { colors, spacing, typography } from '@/constants/theme';
 import {
   authError,
   authGlobalError,
@@ -21,10 +21,14 @@ export default function SignUp() {
   const toast = useToast();
 
   const [step, setStep] = useState<'details' | 'verify'>('details');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
-  const [invalid, setInvalid] = useState<{ email?: string; password?: string }>({});
+  const [invalid, setInvalid] = useState<Partial<Record<'firstName' | 'lastName' | 'email' | 'password', string>>>(
+    {},
+  );
   const [notice, setNotice] = useState<string>();
 
   const busy = fetchStatus === 'fetching';
@@ -42,22 +46,39 @@ export default function SignUp() {
   async function onSubmit() {
     setNotice(undefined);
     const problems = {
+      firstName: firstName.trim() ? undefined : 'Enter your first name.',
+      lastName: lastName.trim() ? undefined : 'Enter your last name.',
       email: isEmail(email.trim()) ? undefined : 'Enter a valid email address.',
       password: password ? undefined : 'Choose a password.',
     };
     setInvalid(problems);
-    if (problems.email || problems.password) return;
+    if (Object.values(problems).some(Boolean)) return;
 
-    const { error } = await signUp.password({ emailAddress: email.trim(), password });
+    const { error } = await signUp.password({
+      firstName: firstName.trim(),
+      lastName: lastName.trim(),
+      emailAddress: email.trim(),
+      password,
+    });
     if (error) return; // Shown through `errors` below.
-    const { error: sendError } = await signUp.verifications.sendEmailCode();
-    if (!sendError) setStep('verify');
+
+    // Email verification is off in Clerk, so the sign-up is usually complete already. If it's
+    // switched back on, fall back to the emailed-code step.
+    if (signUp.status !== 'complete' && signUp.unverifiedFields.includes('email_address')) {
+      const { error: sendError } = await signUp.verifications.sendEmailCode();
+      if (!sendError) setStep('verify');
+      return;
+    }
+    await finishSignUp();
   }
 
   async function onVerify() {
     setNotice(undefined);
     const { error } = await signUp.verifications.verifyEmailCode({ code });
-    if (error) return;
+    if (!error) await finishSignUp();
+  }
+
+  async function finishSignUp() {
     if (signUp.status === 'complete') {
       await signUp.finalize({ navigate: goHomeAfterAuth(setNotice) });
     } else {
@@ -105,6 +126,30 @@ export default function SignUp() {
     <AuthScreen title="Create your account" subtitle="One ledger for every statement and receipt.">
       {formError && <AlertBanner tone="danger" title={formError} />}
 
+      <View style={styles.names}>
+        <TextField
+          style={styles.flex}
+          label="First name"
+          value={firstName}
+          onChangeText={setFirstName}
+          autoCapitalize="words"
+          autoComplete="given-name"
+          textContentType="givenName"
+          returnKeyType="next"
+          error={invalid.firstName ?? authError(errors.fields.firstName)}
+        />
+        <TextField
+          style={styles.flex}
+          label="Last name"
+          value={lastName}
+          onChangeText={setLastName}
+          autoCapitalize="words"
+          autoComplete="family-name"
+          textContentType="familyName"
+          returnKeyType="next"
+          error={invalid.lastName ?? authError(errors.fields.lastName)}
+        />
+      </View>
       <TextField
         label="Email"
         placeholder="you@example.com"
@@ -146,6 +191,9 @@ export default function SignUp() {
 }
 
 const styles = StyleSheet.create({
+  flex: { flex: 1 },
+  // Side by side even on phones: the auth column is at most 400px wide.
+  names: { flexDirection: 'row', gap: spacing.md },
   footer: { ...typography.muted, textAlign: 'center' },
   link: { ...typography.label, color: colors.primary },
 });
