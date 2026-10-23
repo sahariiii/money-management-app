@@ -60,7 +60,8 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
 - Google = `useSSO()` from `@clerk/expo` (browser OAuth: Custom Tab on Android, popup on web), then
   `setActive({ session, navigate })`. Don't call `WebBrowser.maybeCompleteAuthSession()`;
   ClerkProvider does it on web.
-- User data: `useUser()` (home greeting, More → Profile). Sign out: `useClerk().signOut()`.
+- User data: `useUser()` (home greeting, More → Profile). More → Profile (`ProfileCard` in more.tsx)
+  edits first/last name with `user.update()`. Sign out: `useClerk().signOut()`.
 - Backend prep in api.ts: `apiFetch()` sends `Authorization: Bearer <Clerk session token>`
   (`getAuthToken()` via `getClerkInstance()`). `USE_MOCK = true`; functions don't branch on it yet.
   Never send a user ID: the FastAPI backend must verify the token and take the user from it.

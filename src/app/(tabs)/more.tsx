@@ -4,6 +4,7 @@ import { Fragment, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import {
+  AlertBanner,
   AlertItem,
   Avatar,
   BudgetRow,
@@ -32,6 +33,7 @@ import {
 } from '@/lib/api';
 import { categoryColor, categoryIcon } from '@/lib/categories';
 import { formatMonth, formatShortDate } from '@/lib/dates';
+import { authGlobalError } from '@/lib/auth';
 import { formatMoney } from '@/lib/format';
 import type { Category, RecurringBillStatus } from '@/types';
 
@@ -110,12 +112,131 @@ function LimitEditor({ category, value, error, saving, onChange, onSave, onCance
   );
 }
 
-export default function More() {
-  const { isWide, contentWidth } = useLayout();
+type NameErrors = { first?: string; last?: string; save?: string };
+
+/** The signed-in user's name and email, with name editing (accounts made before sign-up asked for it) and sign out. */
+function ProfileCard({ width }: { width: number }) {
   const toast = useToast();
   const { signOut } = useClerk();
   const { user } = useUser();
+
+  const [editing, setEditing] = useState(false);
+  const [first, setFirst] = useState('');
+  const [last, setLast] = useState('');
+  const [errors, setErrors] = useState<NameErrors>({});
+  const [saving, setSaving] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+
+  const fullName = user?.fullName?.trim();
+  const email = user?.primaryEmailAddress?.emailAddress ?? '';
+
+  const startEdit = () => {
+    setFirst(user?.firstName ?? '');
+    setLast(user?.lastName ?? '');
+    setErrors({});
+    setEditing(true);
+  };
+
+  const saveName = async () => {
+    if (!user) return;
+    const problems: NameErrors = {
+      first: first.trim() ? undefined : 'Enter your first name.',
+      last: last.trim() ? undefined : 'Enter your last name.',
+    };
+    setErrors(problems);
+    if (problems.first || problems.last) return;
+    setSaving(true);
+    try {
+      // Saved on the Clerk user, so the home greeting and this card update right away.
+      await user.update({ firstName: first.trim(), lastName: last.trim() });
+      setEditing(false);
+      toast('Name saved');
+    } catch (err) {
+      setErrors({ save: authGlobalError([err]) ?? "Couldn't save your name. Try again." });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onSignOut = async () => {
+    setSigningOut(true);
+    try {
+      // Native: the root layout's guard sends the user to /sign-in. Web: Clerk loads /sign-in.
+      await signOut({ redirectUrl: '/sign-in' });
+    } catch {
+      setSigningOut(false);
+      toast("Couldn't sign out. Check your connection and try again.");
+    }
+  };
+
+  return (
+    <Card style={{ width }}>
+      <SectionHeader title="Profile" />
+      <View style={styles.profile}>
+        <Avatar name={fullName || email} size={layout.avatarSize + spacing.lg} />
+        <View style={styles.flex}>
+          <Text style={styles.rowTitle} numberOfLines={1}>
+            {fullName || 'No name yet'}
+          </Text>
+          <Text style={styles.caption} numberOfLines={1}>
+            {email}
+          </Text>
+        </View>
+        {!editing && (
+          <Button label={fullName ? 'Edit name' : 'Add your name'} variant="ghost" size="sm" onPress={startEdit} />
+        )}
+      </View>
+
+      {editing && (
+        <View style={styles.editor}>
+          {errors.save && <AlertBanner tone="danger" title={errors.save} />}
+          <View style={styles.nameFields}>
+            <TextField
+              style={styles.flex}
+              label="First name"
+              value={first}
+              onChangeText={setFirst}
+              autoCapitalize="words"
+              autoComplete="given-name"
+              textContentType="givenName"
+              autoFocus
+              error={errors.first}
+            />
+            <TextField
+              style={styles.flex}
+              label="Last name"
+              value={last}
+              onChangeText={setLast}
+              autoCapitalize="words"
+              autoComplete="family-name"
+              textContentType="familyName"
+              returnKeyType="done"
+              onSubmitEditing={saveName}
+              error={errors.last}
+            />
+          </View>
+          <View style={styles.editorActions}>
+            <Button label="Cancel" variant="secondary" size="sm" onPress={() => setEditing(false)} />
+            <Button label="Save" size="sm" onPress={saveName} loading={saving} />
+          </View>
+        </View>
+      )}
+
+      <Button
+        label="Sign out"
+        icon="log-out-outline"
+        variant="danger"
+        style={styles.start}
+        loading={signingOut}
+        onPress={onSignOut}
+      />
+    </Card>
+  );
+}
+
+export default function More() {
+  const { isWide, contentWidth } = useLayout();
+  const toast = useToast();
   const month = currentMonth();
 
   const budgets = useAsync(() => getBudgets(month), month);
@@ -154,20 +275,6 @@ export default function More() {
       setSaving(false);
     }
   };
-
-  const onSignOut = async () => {
-    setSigningOut(true);
-    try {
-      // Native: the root layout's guard sends the user to /sign-in. Web: Clerk loads /sign-in.
-      await signOut({ redirectUrl: '/sign-in' });
-    } catch {
-      setSigningOut(false);
-      toast("Couldn't sign out. Check your connection and try again.");
-    }
-  };
-
-  const fullName = user?.fullName?.trim();
-  const email = user?.primaryEmailAddress?.emailAddress ?? '';
 
   const onDismiss = async (id: string) => {
     alerts.setData((alerts.data ?? []).map((a) => (a.id === id ? { ...a, status: 'dismissed' as const } : a)));
@@ -290,28 +397,7 @@ export default function More() {
             onPress={() => toast('Excel export is coming soon. The backend will build the file.')}
           />
         </Card>
-        <Card style={{ width: half }}>
-          <SectionHeader title="Profile" />
-          <View style={styles.profile}>
-            <Avatar name={fullName || email} size={layout.avatarSize + spacing.lg} />
-            <View style={styles.flex}>
-              <Text style={styles.rowTitle} numberOfLines={1}>
-                {fullName || 'No name yet'}
-              </Text>
-              <Text style={styles.caption} numberOfLines={1}>
-                {email}
-              </Text>
-            </View>
-          </View>
-          <Button
-            label="Sign out"
-            icon="log-out-outline"
-            variant="danger"
-            style={styles.start}
-            loading={signingOut}
-            onPress={onSignOut}
-          />
-        </Card>
+        <ProfileCard width={half} />
       </View>
     </Screen>
   );
@@ -336,6 +422,7 @@ const styles = StyleSheet.create({
   editorActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.sm },
   unbudgeted: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   profile: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  nameFields: { flexDirection: 'row', gap: spacing.md },
   bill: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
   billMain: { flex: 1, gap: spacing.xxs },
   billAmounts: { alignItems: 'flex-end', gap: spacing.xxs },
