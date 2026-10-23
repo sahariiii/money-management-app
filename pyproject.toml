@@ -1,0 +1,41 @@
+[project]
+name = "personal-banker"
+version = "0.1.0"
+description = "Multi-agent e-statement reader: layout pass, then text pass, then reconciliation"
+requires-python = ">=3.13"
+dependencies = [
+    "anthropic>=1.15",
+    "braintrust>=0.48.0",
+    "cryptography>=46",
+    "dotenv>=0.9.9",
+    "openpyxl>=3.1.5",
+    "pillow>=12.3.0",
+    "pydantic>=2.14",
+    "pypdf>=6",
+    "pypdfium2>=5.14.0",
+    "streamlit>=1.66",
+]
+
+[project.optional-dependencies]
+# Local PaddleOCR-VL extraction engine: uv sync --extra paddle
+paddle = [
+    "paddlepaddle-gpu>=3.4.0",
+    "paddleocr[doc-parser]>=3.3",
+    # paddlepaddle-gpu only pulls in its CUDA libraries on Linux; Windows needs them listed.
+    "nvidia-cublas-cu12; sys_platform == 'win32'",
+    "nvidia-cuda-runtime-cu12; sys_platform == 'win32'",
+    "nvidia-cudnn-cu12>=9,<10; sys_platform == 'win32'",
+    "nvidia-cufft-cu12; sys_platform == 'win32'",
+    "nvidia-curand-cu12; sys_platform == 'win32'",
+    "nvidia-cusolver-cu12; sys_platform == 'win32'",
+    "nvidia-cusparse-cu12; sys_platform == 'win32'",
+    "nvidia-nvjitlink-cu12; sys_platform == 'win32'",
+]
+
+[tool.uv.sources]
+paddlepaddle-gpu = { index = "paddle-cu129" }
+
+[[tool.uv.index]]
+name = "paddle-cu129"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cu129/"
+explicit = true
