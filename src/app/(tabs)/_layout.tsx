@@ -70,7 +70,8 @@ export default function TabsLayout() {
       />
       <Tabs.Screen
         name="chat"
-        options={{ title: 'Assistant', tabBarIcon: tabIcon('sparkles-outline', 'sparkles') }}
+        // Hide the tab bar while typing so it doesn't ride up above the keyboard on Android.
+        options={{ title: 'Assistant', tabBarIcon: tabIcon('sparkles-outline', 'sparkles'), tabBarHideOnKeyboard: true }}
       />
       <Tabs.Screen
         name="cards"

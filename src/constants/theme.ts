@@ -35,6 +35,12 @@ export const categoryColors = {
   Other: '#94A3B8',
 } as const;
 
+/** Gradients for the payment-card visuals, picked by card type. */
+export const cardGradients = {
+  debit: ['#1E293B', '#475569'],
+  credit: ['#4F46E5', '#7C3AED'],
+} as const;
+
 export const spacing = {
   xxs: 2,
   xs: 4,
@@ -83,6 +89,11 @@ export const layout = {
   chartHeight: 180,
   donutRadius: 80,
   fabSize: 56,
+  /** Width / height of a real payment card. */
+  cardAspectRatio: 1.586,
+  chatBubbleMaxWidth: '82%',
+  inputHeight: 44,
+  receiptMaxHeight: 320,
   iconSize: 22,
   avatarSize: 40,
   progressHeight: 8,

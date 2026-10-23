@@ -6,9 +6,9 @@ import {
   DEMO_TODAY,
   alerts as seedAlerts,
   budgets,
-  cards,
+  cards as seedCards,
   recurringBills,
-  rewardRules,
+  rewardRules as seedRules,
   transactions as seedTransactions,
 } from '@/data/mock';
 import { lastDayOf, shiftMonth, weekStart } from '@/lib/dates';
@@ -23,13 +23,19 @@ import type {
   CategoryUpdate,
   ChatMessage,
   DateRange,
+  FeeCheck,
   ISODate,
   MerchantSpend,
   MonthTotals,
+  NewCardInput,
   OptimizerCategory,
+  PickedFile,
   RangePreset,
+  ReceiptScan,
   RecurringBill,
+  RewardRule,
   SpendSummary,
+  StatementUpload,
   Transaction,
   TransactionFilters,
   WeekTotals,
@@ -37,13 +43,16 @@ import type {
 } from '@/types';
 
 // ---------------------------------------------------------------------------
-// In-memory "database" so edits (recategorize, dismiss) persist for the session.
+// In-memory "database" so edits (recategorize, dismiss, add card, chat) persist for the session.
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
 const db = {
   transactions: clone(seedTransactions),
   alerts: clone(seedAlerts),
+  cards: clone(seedCards),
+  rewardRules: clone(seedRules),
+  chat: [] as ChatMessage[],
   /** merchant -> category, applied when the user picks "always for this merchant". */
   merchantRules: {} as Record<string, Category>,
 };
@@ -93,7 +102,22 @@ function daysBetween({ from, to }: DateRange) {
 
 export async function getCards(): Promise<Card[]> {
   await delay();
-  return clone(cards);
+  return clone(db.cards);
+}
+
+export async function getRewardRules(cardId?: string): Promise<RewardRule[]> {
+  await delay(150);
+  return clone(cardId ? db.rewardRules.filter((r) => r.cardId === cardId) : db.rewardRules);
+}
+
+export async function addCard(input: NewCardInput): Promise<Card> {
+  await delay(500);
+  const { rules, ...fields } = input;
+  // Only ever keep the last 4 digits, whatever the caller passes.
+  const card: Card = { ...fields, id: `card_${Date.now()}`, last4: fields.last4.replace(/\D/g, '').slice(-4) };
+  db.cards.push(card);
+  db.rewardRules.push(...rules.map((r) => ({ ...r, cardId: card.id })));
+  return clone(card);
 }
 
 export async function getTransactions(filters: TransactionFilters = {}): Promise<Transaction[]> {
@@ -292,7 +316,7 @@ export async function dismissAlert(id: string): Promise<Alert | null> {
 const NOT_CARD_PAYABLE: Category[] = ['Housing', 'Income'];
 
 function ruleFor(cardId: string, category: Category) {
-  const rules = rewardRules.filter((r) => r.cardId === cardId);
+  const rules = db.rewardRules.filter((r) => r.cardId === cardId);
   return rules.find((r) => r.category === category) ?? rules.find((r) => r.category === '*');
 }
 
@@ -316,7 +340,7 @@ function rewardFor(
     eligible = Math.max(0, Math.min(t.amount, rule.cap - used));
     if (commit) usage.set(key, used + t.amount);
   }
-  const base = rewardRules.find((r) => r.cardId === cardId && r.category === '*');
+  const base = db.rewardRules.find((r) => r.cardId === cardId && r.category === '*');
   const fallbackRate = base && base !== rule ? base.ratePercent : 0;
   return (eligible * rule.ratePercent + (t.amount - eligible) * fallbackRate) / 100;
 }
@@ -332,6 +356,7 @@ function optimize(range: DateRange): CardOptimizer {
   type Acc = { spent: number; earned: number; potential: number; byCard: Map<string, number>; bestByCard: Map<string, number> };
   const cats = new Map<Category, Acc>();
   const perCard = new Map<string, { spent: number; earned: number }>();
+  const potentialByCard = new Map<string, number>();
 
   for (const t of txs) {
     const earned = rewardFor(t.cardId, t, actualUsage, true);
@@ -339,7 +364,7 @@ function optimize(range: DateRange): CardOptimizer {
     // Best case: the card that would have paid the most for this purchase.
     let bestCard = t.cardId;
     let bestReward = -1;
-    for (const card of cards) {
+    for (const card of db.cards) {
       const r = rewardFor(card.id, t, bestUsage, false);
       if (r > bestReward) {
         bestReward = r;
@@ -347,6 +372,7 @@ function optimize(range: DateRange): CardOptimizer {
       }
     }
     rewardFor(bestCard, t, bestUsage, true);
+    potentialByCard.set(bestCard, (potentialByCard.get(bestCard) ?? 0) + bestReward);
 
     const acc = cats.get(t.category) ?? { spent: 0, earned: 0, potential: 0, byCard: new Map(), bestByCard: new Map() };
     acc.spent += t.amount;
@@ -378,7 +404,7 @@ function optimize(range: DateRange): CardOptimizer {
   const yearFactor = 365 / daysBetween(range);
 
   const cardName = (id: string) => {
-    const card = cards.find((c) => c.id === id);
+    const card = db.cards.find((c) => c.id === id);
     return card ? `${card.nickname} (•••• ${card.last4})` : id;
   };
 
@@ -387,14 +413,18 @@ function optimize(range: DateRange): CardOptimizer {
     .slice(0, 3)
     .map((c) => `Use ${cardName(c.bestCardId)} for ${c.category}: you'd have earned ${formatMoney(c.missed)} more in this period.`);
 
-  for (const card of cards.filter((c) => c.annualFee > 0)) {
-    const perYear = sum(byCategory.filter((c) => c.bestCardId === card.id).map((c) => c.potential)) * yearFactor;
-    tips.push(
-      perYear >= card.annualFee
-        ? `Used for the right categories, ${card.nickname} earns about ${formatMoney(perYear)}/yr, covering its ${formatMoney(card.annualFee)} fee.`
-        : `${card.nickname} would earn about ${formatMoney(perYear)}/yr at your spending, less than its ${formatMoney(card.annualFee)} fee.`,
-    );
-  }
+  const feeChecks: FeeCheck[] = db.cards
+    .filter((c) => c.annualFee > 0)
+    .map((c) => {
+      const earnedPerYear = round2((perCard.get(c.id)?.earned ?? 0) * yearFactor);
+      return {
+        cardId: c.id,
+        annualFee: c.annualFee,
+        earnedPerYear,
+        potentialPerYear: round2((potentialByCard.get(c.id) ?? 0) * yearFactor),
+        covered: earnedPerYear >= c.annualFee,
+      };
+    });
 
   return {
     range,
@@ -403,10 +433,11 @@ function optimize(range: DateRange): CardOptimizer {
     missed: round2(missed),
     missedPerYear: round2(missed * yearFactor),
     byCategory,
-    byCard: cards.map((c) => {
+    byCard: db.cards.map((c) => {
       const v = perCard.get(c.id) ?? { spent: 0, earned: 0 };
       return { cardId: c.id, spent: round2(v.spent), earned: round2(v.earned) };
     }),
+    feeChecks,
     tips,
   };
 }
@@ -419,15 +450,17 @@ export async function getCardOptimizer(period: RangePreset | DateRange = 'last-3
 // ---------------------------------------------------------------------------
 // Assistant (canned answers computed from the data until the agent backend exists)
 
+type Answer = Pick<ChatMessage, 'text' | 'summary'>;
+
 let messageSeq = 0;
-const message = (role: ChatMessage['role'], text: string): ChatMessage => ({
+const message = (role: ChatMessage['role'], answer: Answer): ChatMessage => ({
   id: `msg_${Date.now()}_${messageSeq++}`,
   role,
-  text,
   createdAt: new Date().toISOString(),
+  ...answer,
 });
 
-function onTrackAnswer(): string {
+function onTrackAnswer(): Answer {
   const month = currentMonth();
   const dayOfMonth = Number(today().slice(8));
   const daysLeft = Number(lastDayOf(month).slice(8)) - dayOfMonth;
@@ -446,20 +479,29 @@ function onTrackAnswer(): string {
   if (hot.length === 0) {
     lines.unshift('Yes, you are on track.');
     lines.push('Every budget is under 80%.');
-  } else {
-    lines.unshift(hot.some((b) => b.ratio >= 1) ? 'Not quite.' : 'Mostly, with one thing to watch.');
-    for (const b of hot) {
-      lines.push(
-        `${b.category}: ${formatMoney(b.spent)} of ${formatMoney(b.monthlyLimit)} (${Math.round(b.ratio * 100)}%) with ${daysLeft} days left.`,
-      );
-    }
-    const others = statuses.length - hot.length;
-    if (others > 0) lines.push(`Your other ${others} budgets are under 80%.`);
+    return { text: lines.join(' '), summary: { value: formatMoney(thisMonth), label: 'Spent this month', tone: 'primary' } };
   }
-  return lines.join(' ');
+
+  lines.unshift(hot.some((b) => b.ratio >= 1) ? 'Not quite.' : 'Mostly, with one thing to watch.');
+  for (const b of hot) {
+    lines.push(
+      `${b.category}: ${formatMoney(b.spent)} of ${formatMoney(b.monthlyLimit)} (${Math.round(b.ratio * 100)}%) with ${daysLeft} days left.`,
+    );
+  }
+  const others = statuses.length - hot.length;
+  if (others > 0) lines.push(`Your other ${others} budgets are under 80%.`);
+  const top = hot[0];
+  return {
+    text: lines.join(' '),
+    summary: {
+      value: `${Math.round(top.ratio * 100)}%`,
+      label: `${top.category} budget used`,
+      tone: top.ratio >= 1 ? 'expense' : 'warning',
+    },
+  };
 }
 
-function restaurantsAnswer(): string {
+function restaurantsAnswer(): Answer {
   const range = { from: '2026-07-01', to: today() };
   const food = db.transactions.filter((t) => t.category === 'Food' && !t.isIncome && inRange(t, range));
   const total = sum(food.map((t) => t.amount));
@@ -478,21 +520,98 @@ function restaurantsAnswer(): string {
     .join(', ');
   const [topMerchant, topAmount] = [...merchants].sort((a, b) => b[1] - a[1])[0] ?? ['none', 0];
 
-  return (
-    `Since July you've spent ${formatMoney(total)} on restaurants, cafés and takeout across ${food.length} purchases ` +
-    `(${breakdown}; my records start in August). Your top spot is ${topMerchant} at ${formatMoney(topAmount)}.`
-  );
+  return {
+    text:
+      `Since July you've spent ${formatMoney(total)} on restaurants, cafés and takeout across ${food.length} purchases ` +
+      `(${breakdown}; my records start in August). Your top spot is ${topMerchant} at ${formatMoney(topAmount)}.`,
+    summary: { value: formatMoney(total), label: 'Restaurants & takeout since July', tone: 'expense' },
+  };
 }
 
-const FALLBACK =
-  "I'm still learning your habits. I can help with budgets, spending by category, upcoming bills and " +
-  'which card to use. Try "Am I on track this month?" or "How much on restaurants since July?"';
+function cardAnswer(question: string): Answer {
+  const opt = optimize(resolveRange('this-month'));
+  const asked = opt.byCategory.find((c) => question.includes(c.category.toLowerCase()));
+  const pick = asked ?? opt.byCategory[0];
+  if (!pick) return { text: "You haven't spent anything on cards this month yet." };
 
+  const best = db.cards.find((c) => c.id === pick.bestCardId);
+  const rate = best ? ruleFor(best.id, pick.category)?.ratePercent ?? 0 : 0;
+  const name = best ? `${best.nickname} (•••• ${best.last4})` : 'your best card';
+  const category = pick.category.toLowerCase();
+
+  if (pick.missed < 0.01) {
+    return { text: `You're already using ${name} for ${category}, which is the best option at ${rate}% back.` };
+  }
+  return {
+    text:
+      `Use ${name} for ${category}: it pays ${rate}% back. This month you put ${formatMoney(pick.spent - (pick.spendByCard.find((c) => c.cardId === pick.bestCardId)?.amount ?? 0))} ` +
+      `of ${category} on a card that earns less, which left ${formatMoney(pick.missed)} on the table.`,
+    summary: { value: `+${formatMoney(pick.missed)}`, label: `More cashback on ${category} this month`, tone: 'income' },
+  };
+}
+
+const FALLBACK: Answer = {
+  text:
+    "I'm still learning your habits. I can help with budgets, spending by category and which card to use. " +
+    'Try "Am I on track this month?" or "How much on restaurants since July?"',
+};
+
+export async function getChatHistory(): Promise<ChatMessage[]> {
+  await delay(150);
+  return clone(db.chat);
+}
+
+/** Stores the user's message, then returns (and stores) the assistant's reply. */
 export async function sendChatMessage(text: string): Promise<ChatMessage> {
-  await delay(900);
+  db.chat.push(message('user', { text }));
+  await delay(1200);
   const q = text.toLowerCase();
   let answer = FALLBACK;
   if (q.includes('on track')) answer = onTrackAnswer();
   else if (/restaurant|eating out|dining|takeout|take-out/.test(q)) answer = restaurantsAnswer();
-  return message('assistant', answer);
+  else if (/\bcard\b|cashback|rewards?/.test(q)) answer = cardAnswer(q);
+  const reply = message('assistant', answer);
+  db.chat.push(reply);
+  return clone(reply);
+}
+
+// ---------------------------------------------------------------------------
+// Uploads (mocked: file contents are never read)
+
+export async function uploadStatement(file: PickedFile): Promise<StatementUpload> {
+  await delay(2400);
+  // Pretend the statement holds the 40 most recent ledger rows, so everything matches.
+  const rows = [...db.transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 40);
+  const dates = rows.map((t) => t.date).sort();
+  return {
+    fileName: file.name,
+    transactionsFound: rows.length,
+    range: { from: dates[0], to: dates[dates.length - 1] },
+    totalSpent: round2(sum(rows.filter((t) => !t.isIncome).map((t) => t.amount))),
+    totalIncome: round2(sum(rows.filter((t) => t.isIncome).map((t) => t.amount))),
+    alreadyInLedger: rows.length,
+    newTransactions: 0,
+    balanceCheck: 'passed',
+  };
+}
+
+const HST = 0.13;
+
+export async function scanReceipt(image: PickedFile): Promise<ReceiptScan> {
+  void image;
+  await delay(2000);
+  // Pretend every photo is the Gusto 101 dinner receipt, which is already in the ledger.
+  const match = db.transactions.find((t) => t.merchant === 'Gusto 101') ?? null;
+  const total = match?.amount ?? 84.6;
+  const subtotal = round2(total / (1 + HST));
+  return {
+    merchant: match?.merchant ?? 'Gusto 101',
+    date: match?.date ?? today(),
+    subtotal,
+    tax: round2(total - subtotal),
+    taxLabel: 'HST 13%',
+    total,
+    currency: 'CAD',
+    matchedTransaction: match ? clone(match) : null,
+  };
 }

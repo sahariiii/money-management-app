@@ -86,6 +86,8 @@ export type ChatMessage = {
   role: 'user' | 'assistant';
   text: string;
   createdAt: string;
+  /** Optional headline number shown as a small card under an assistant answer. */
+  summary?: { value: string; label: string; tone?: 'primary' | 'income' | 'expense' | 'warning' };
 };
 
 // ---- API shapes (computed, not stored) ----
@@ -138,6 +140,17 @@ export type OptimizerCategory = {
   spendByCard: { cardId: string; amount: number }[];
 };
 
+export type FeeCheck = {
+  cardId: string;
+  annualFee: number;
+  /** What the card actually earned in the period, scaled to 12 months. */
+  earnedPerYear: number;
+  /** What it would earn if used for every category where it's the best card. */
+  potentialPerYear: number;
+  /** earnedPerYear >= annualFee */
+  covered: boolean;
+};
+
 export type CardOptimizer = {
   range: DateRange;
   earned: number;
@@ -147,7 +160,40 @@ export type CardOptimizer = {
   missedPerYear: number;
   byCategory: OptimizerCategory[];
   byCard: { cardId: string; spent: number; earned: number }[];
+  /** One entry per card with an annual fee. */
+  feeChecks: FeeCheck[];
   tips: string[];
 };
 
 export type CategoryUpdate = { transaction: Transaction; affectedCount: number };
+
+export type NewCardInput = Omit<Card, 'id'> & {
+  rules: Omit<RewardRule, 'cardId'>[];
+};
+
+/** Metadata of a file the user picked; the mock never reads its contents. */
+export type PickedFile = { name: string; size?: number; mimeType?: string; uri: string };
+
+export type StatementUpload = {
+  fileName: string;
+  transactionsFound: number;
+  range: DateRange;
+  totalSpent: number;
+  totalIncome: number;
+  /** Rows already in the ledger (skipped as duplicates). */
+  alreadyInLedger: number;
+  newTransactions: number;
+  balanceCheck: 'passed' | 'failed';
+};
+
+export type ReceiptScan = {
+  merchant: string;
+  date: ISODate;
+  subtotal: number;
+  tax: number;
+  taxLabel: string;
+  total: number;
+  currency: string;
+  /** Existing ledger transaction this receipt matches, if any. */
+  matchedTransaction: Transaction | null;
+};

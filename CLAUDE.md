@@ -21,7 +21,11 @@ Current phase: UI only. No backend, no real auth, no database. Everything uses m
 ## Layout
 This project uses the `src/` layout (import alias `@/*` -> `src/*`):
 - src/app/ — routes only (Expo Router). `(auth)/sign-in`, `(tabs)/` with 5 tabs
-  (index, transactions, chat, cards, more), modals: upload-statement, scan-receipt, transaction/[id].
+  (index, transactions, chat, cards, more), modals: upload-statement, scan-receipt,
+  transaction/[id], add-card. New modal routes must also be registered in src/app/_layout.tsx.
+- Mocked "AI" features live in api.ts: chat answers (on-track, restaurants, which card),
+  uploadStatement (always 40 latest rows, all already in ledger), scanReceipt (always matches
+  the Gusto 101 transaction). Pickers (expo-document-picker / expo-image-picker) are real.
 - src/components/ — shared UI (Screen, Card, StatTile, ProgressBar, TransactionRow, AlertBanner,
   Chip, SectionHeader, EmptyState). Import from `@/components`.
 - src/constants/theme.ts — design tokens (colors, spacing, radius, fontSize, layout).
