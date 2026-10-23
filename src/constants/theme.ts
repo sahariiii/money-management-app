@@ -139,6 +139,8 @@ export const layout = {
   /** Window width at which layouts switch from phone to wide. */
   wideBreakpoint: 720,
   chartHeight: 180,
+  /** Taller line chart on wide screens, so it fills a card the height of the donut beside it. */
+  chartHeightWide: 290,
   donutRadius: 80,
   /** Width / height of a real payment card. */
   cardAspectRatio: 1.586,

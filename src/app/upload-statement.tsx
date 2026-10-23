@@ -4,8 +4,8 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
-import { AlertBanner, Button, Card, EmptyState, Screen, SectionHeader } from '@/components';
-import { colors, fontSize, fontWeight, layout, spacing } from '@/constants/theme';
+import { AlertBanner, Button, Card, DetailRow, EmptyState, Screen, SectionHeader } from '@/components';
+import { colors, layout, spacing, typography } from '@/constants/theme';
 import { uploadStatement } from '@/lib/api';
 import { formatShortDate } from '@/lib/dates';
 import { formatMoney } from '@/lib/format';
@@ -26,7 +26,7 @@ function Step({ state, label }: { state: 'pending' | 'active' | 'done'; label: s
           color={state === 'done' ? colors.income : colors.border}
         />
       )}
-      <Text style={[styles.stepLabel, state === 'pending' && styles.muted]}>{label}</Text>
+      <Text style={[styles.stepLabel, state === 'pending' && styles.pending]}>{label}</Text>
     </View>
   );
 }
@@ -36,32 +36,39 @@ export default function UploadStatement() {
   const [file, setFile] = useState<PickedFile | null>(null);
   const [step, setStep] = useState(0);
   const [result, setResult] = useState<StatementUpload | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   async function pick() {
-    const res = await DocumentPicker.getDocumentAsync({
-      type: ['text/csv', 'text/comma-separated-values', 'application/pdf'],
-      copyToCacheDirectory: false,
-    });
-    if (res.canceled) return;
-    const a = res.assets[0];
-    const picked = { name: a.name, size: a.size, mimeType: a.mimeType, uri: a.uri };
+    setError(null);
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ['text/csv', 'text/comma-separated-values', 'application/pdf'],
+        copyToCacheDirectory: false,
+      });
+      if (res.canceled) return;
+      const a = res.assets[0];
+      const picked = { name: a.name, size: a.size, mimeType: a.mimeType, uri: a.uri };
 
-    setFile(picked);
-    setResult(null);
-    setStep(0);
-    setPhase('processing');
+      setFile(picked);
+      setResult(null);
+      setStep(0);
+      setPhase('processing');
 
-    // Fake pipeline: the steps advance on timers while the (mock) upload runs.
-    const upload = uploadStatement(picked);
-    await wait(900);
-    setStep(1);
-    const r = await upload;
-    setResult(r);
-    await wait(700);
-    setStep(2);
-    await wait(900);
-    setStep(3);
-    setPhase('done');
+      // Fake pipeline: the steps advance on timers while the (mock) upload runs.
+      const upload = uploadStatement(picked);
+      await wait(900);
+      setStep(1);
+      const r = await upload;
+      setResult(r);
+      await wait(700);
+      setStep(2);
+      await wait(900);
+      setStep(3);
+      setPhase('done');
+    } catch {
+      setPhase('idle');
+      setError("Couldn't read that file. Try a CSV or PDF statement.");
+    }
   }
 
   const stateOf = (i: number) => (step > i ? 'done' : step === i ? 'active' : 'pending');
@@ -69,7 +76,7 @@ export default function UploadStatement() {
 
   if (phase === 'idle') {
     return (
-      <Screen edges={['bottom']}>
+      <Screen edges={['bottom']} width="narrow">
         <EmptyState
           icon="cloud-upload-outline"
           title="Upload a bank statement"
@@ -77,33 +84,31 @@ export default function UploadStatement() {
           actionLabel="Choose file"
           onAction={pick}
         />
+        {error && <AlertBanner tone="danger" title={error} />}
         <Text style={styles.footnote}>{"Demo mode: the file stays on this device and isn't read."}</Text>
       </Screen>
     );
   }
 
   return (
-    <Screen edges={['bottom']}>
+    <Screen edges={['bottom']} width="narrow">
       <Card>
         <View style={styles.fileRow}>
           <Ionicons
             name={file?.mimeType === 'application/pdf' ? 'document-text-outline' : 'grid-outline'}
-            size={layout.iconSize + 4}
+            size={layout.iconSize + spacing.xs}
             color={colors.primary}
           />
           <View style={styles.flex}>
             <Text style={styles.fileName} numberOfLines={1}>
               {file?.name}
             </Text>
-            {file?.size ? <Text style={styles.muted}>{Math.max(1, Math.round(file.size / 1024))} KB</Text> : null}
+            {file?.size ? <Text style={styles.caption}>{Math.max(1, Math.round(file.size / 1024))} KB</Text> : null}
           </View>
         </View>
         <View style={styles.steps}>
           <Step state={stateOf(0)} label="Reading file" />
-          <Step
-            state={stateOf(1)}
-            label={n === undefined ? 'Extracting transactions' : `Extracting ${n} transactions`}
-          />
+          <Step state={stateOf(1)} label={n === undefined ? 'Extracting transactions' : `Extracting ${n} transactions`} />
           <Step state={stateOf(2)} label={step > 2 ? 'Balance check passed ✓' : 'Balance check'} />
         </View>
       </Card>
@@ -117,12 +122,12 @@ export default function UploadStatement() {
           />
           <Card>
             <SectionHeader title="Summary" />
-            <Row label="Statement period" value={`${formatShortDate(result.range.from)} – ${formatShortDate(result.range.to)}`} />
-            <Row label="Transactions found" value={String(result.transactionsFound)} />
-            <Row label="Money out" value={`−${formatMoney(result.totalSpent)}`} tone="expense" />
-            <Row label="Money in" value={`+${formatMoney(result.totalIncome)}`} tone="income" />
-            <Row label="Already in your ledger" value={`${result.alreadyInLedger} (skipped, no duplicates)`} />
-            <Row label="New transactions added" value={String(result.newTransactions)} />
+            <DetailRow label="Statement period" value={`${formatShortDate(result.range.from)} – ${formatShortDate(result.range.to)}`} />
+            <DetailRow label="Transactions found" value={String(result.transactionsFound)} />
+            <DetailRow label="Money out" value={`−${formatMoney(result.totalSpent)}`} tone="expense" />
+            <DetailRow label="Money in" value={`+${formatMoney(result.totalIncome)}`} tone="income" />
+            <DetailRow label="Already in your ledger" value={`${result.alreadyInLedger} (skipped, no duplicates)`} />
+            <DetailRow label="New transactions added" value={String(result.newTransactions)} />
           </Card>
           <View style={styles.actions}>
             <Button label="Upload another" variant="secondary" onPress={pick} />
@@ -134,25 +139,15 @@ export default function UploadStatement() {
   );
 }
 
-function Row({ label, value, tone }: { label: string; value: string; tone?: 'income' | 'expense' }) {
-  return (
-    <View style={styles.row}>
-      <Text style={styles.muted}>{label}</Text>
-      <Text style={[styles.value, tone && { color: colors[tone] }]}>{value}</Text>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  footnote: { fontSize: fontSize.xs, color: colors.muted, textAlign: 'center' },
+  footnote: { ...typography.caption, textAlign: 'center' },
   fileRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  fileName: { fontSize: fontSize.md, fontWeight: fontWeight.semibold, color: colors.text },
+  fileName: typography.subheading,
+  caption: typography.caption,
   steps: { gap: spacing.md, paddingTop: spacing.sm },
   step: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  stepLabel: { fontSize: fontSize.md, color: colors.text },
-  muted: { fontSize: fontSize.sm, color: colors.muted },
-  row: { flexDirection: 'row', justifyContent: 'space-between', gap: spacing.lg },
-  value: { flexShrink: 1, textAlign: 'right', fontSize: fontSize.sm, fontWeight: fontWeight.semibold, color: colors.text },
+  stepLabel: typography.body,
+  pending: { color: colors.muted },
   actions: { flexDirection: 'row', justifyContent: 'flex-end', flexWrap: 'wrap', gap: spacing.md },
 });

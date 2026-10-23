@@ -17,7 +17,7 @@ import {
   StatTile,
   WeeklySpendChart,
 } from '@/components';
-import { colors, lineHeight, spacing, typography } from '@/constants/theme';
+import { colors, layout, lineHeight, spacing, typography } from '@/constants/theme';
 import { useAsync } from '@/hooks/use-async';
 import { useLayout } from '@/hooks/use-layout';
 import {
@@ -141,12 +141,16 @@ export default function Home() {
           ) : noWeeklySpend ? (
             <EmptyState compact icon="analytics-outline" title="No spending yet" />
           ) : (
-            <WeeklySpendChart data={weekly.data} width={chartWidth} />
+            <WeeklySpendChart
+              data={weekly.data}
+              width={chartWidth}
+              height={isWide ? layout.chartHeightWide : layout.chartHeight}
+            />
           )}
         </Card>
       </View>
 
-      <View style={[styles.grid, { gap }]}>
+      <View style={[styles.grid, styles.gridTop, { gap }]}>
         <Card style={{ width: half }}>
           <SectionHeader title="Budgets" actionLabel="See all" onAction={() => router.push('/more')} />
           {!budgets.data ? (
@@ -207,8 +211,10 @@ const styles = StyleSheet.create({
   headerText: { gap: spacing.xxs, flexShrink: 1 },
   greeting: typography.title,
   subtitle: typography.muted,
-  // Default stretch: cards side by side get equal heights.
+  // Default stretch: cards side by side get equal heights (the two charts).
   grid: { flexDirection: 'row', flexWrap: 'wrap' },
+  // Natural heights: the short tip card shouldn't stretch to the budgets list.
+  gridTop: { alignItems: 'flex-start' },
   caption: typography.caption,
   tipCard: { backgroundColor: colors.primarySoft, borderColor: colors.primarySoft },
   tipHeadline: { ...typography.subheading, lineHeight: lineHeight.md },

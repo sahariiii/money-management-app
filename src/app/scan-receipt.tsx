@@ -2,14 +2,14 @@ import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { Platform, StyleSheet, Text, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 
-import { AlertBanner, Button, Card, EmptyState, Loading, Screen, SectionHeader } from '@/components';
-import { colors, fontSize, fontWeight, layout, radius, spacing } from '@/constants/theme';
+import { AlertBanner, Button, Card, DetailRow, Divider, EmptyState, Loading, Screen, SectionHeader } from '@/components';
+import { borderWidth, colors, layout, radius, spacing } from '@/constants/theme';
 import { useAsync } from '@/hooks/use-async';
 import { useLayout } from '@/hooks/use-layout';
 import { getCards, scanReceipt } from '@/lib/api';
-import { formatLongDate, formatShortDate } from '@/lib/dates';
+import { formatShortDate } from '@/lib/dates';
 import { formatMoney, maskCard } from '@/lib/format';
 import type { ReceiptScan } from '@/types';
 
@@ -25,25 +25,31 @@ export default function ScanReceipt() {
 
   async function capture(source: 'camera' | 'library') {
     setError(null);
-    const options: ImagePicker.ImagePickerOptions = { mediaTypes: ['images'], quality: 0.7 };
-    let res: ImagePicker.ImagePickerResult;
-    if (source === 'camera') {
-      const perm = await ImagePicker.requestCameraPermissionsAsync();
-      if (!perm.granted) {
-        setError('Camera access was denied. You can allow it in Settings, or choose a photo instead.');
-        return;
+    try {
+      const options: ImagePicker.ImagePickerOptions = { mediaTypes: ['images'], quality: 0.7 };
+      let res: ImagePicker.ImagePickerResult;
+      if (source === 'camera') {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!perm.granted) {
+          setError('Camera access was denied. You can allow it in Settings, or choose a photo instead.');
+          return;
+        }
+        res = await ImagePicker.launchCameraAsync(options);
+      } else {
+        res = await ImagePicker.launchImageLibraryAsync(options);
       }
-      res = await ImagePicker.launchCameraAsync(options);
-    } else {
-      res = await ImagePicker.launchImageLibraryAsync(options);
-    }
-    if (res.canceled) return;
+      if (res.canceled) return;
 
-    const a = res.assets[0];
-    const picked = { uri: a.uri, width: a.width || 3, height: a.height || 4, name: a.fileName ?? 'receipt.jpg' };
-    setPhoto(picked);
-    setResult(null);
-    setResult(await scanReceipt({ name: picked.name, uri: picked.uri, mimeType: a.mimeType }));
+      const a = res.assets[0];
+      // Some web pickers report 0x0; fall back to a portrait receipt shape.
+      const picked = { uri: a.uri, width: a.width || 3, height: a.height || 4, name: a.fileName ?? 'receipt.jpg' };
+      setPhoto(picked);
+      setResult(null);
+      setResult(await scanReceipt({ name: picked.name, uri: picked.uri, mimeType: a.mimeType }));
+    } catch {
+      setPhoto(null);
+      setError("Couldn't open that image. Try another photo.");
+    }
   }
 
   if (!photo) {
@@ -94,12 +100,12 @@ export default function ScanReceipt() {
             <>
               <Card>
                 <SectionHeader title="Extracted" />
-                <Row label="Merchant" value={result.merchant} />
-                <Row label="Date" value={formatLongDate(result.date)} />
-                <Row label="Subtotal" value={formatMoney(result.subtotal, result.currency)} />
-                <Row label={`Tax (${result.taxLabel})`} value={formatMoney(result.tax, result.currency)} />
-                <View style={styles.divider} />
-                <Row label="Total" value={formatMoney(result.total, result.currency)} strong />
+                <DetailRow label="Merchant" value={result.merchant} />
+                <DetailRow label="Date" value={formatShortDate(result.date)} />
+                <DetailRow label="Subtotal" value={formatMoney(result.subtotal, result.currency)} />
+                <DetailRow label={`Tax (${result.taxLabel})`} value={formatMoney(result.tax, result.currency)} />
+                <Divider />
+                <DetailRow label="Total" value={formatMoney(result.total, result.currency)} strong />
               </Card>
 
               {match ? (
@@ -128,15 +134,6 @@ export default function ScanReceipt() {
   );
 }
 
-function Row({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
-  return (
-    <View style={styles.row}>
-      <Text style={[styles.label, strong && styles.strongLabel]}>{label}</Text>
-      <Text style={[styles.value, strong && styles.strongValue]}>{value}</Text>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   pickers: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: spacing.md },
   layout: { gap: spacing.lg },
@@ -146,17 +143,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: colors.card,
     borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: borderWidth.hairline,
     borderColor: colors.border,
     padding: spacing.sm,
   },
   image: { width: '100%', maxHeight: layout.receiptMaxHeight, borderRadius: radius.md },
   details: { gap: spacing.lg },
-  row: { flexDirection: 'row', justifyContent: 'space-between', gap: spacing.lg },
-  label: { fontSize: fontSize.sm, color: colors.muted },
-  value: { flexShrink: 1, textAlign: 'right', fontSize: fontSize.sm, fontWeight: fontWeight.semibold, color: colors.text },
-  strongLabel: { fontSize: fontSize.md, color: colors.text, fontWeight: fontWeight.semibold },
-  strongValue: { fontSize: fontSize.lg, fontWeight: fontWeight.bold },
-  divider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border },
   actions: { flexDirection: 'row', justifyContent: 'flex-end', flexWrap: 'wrap', gap: spacing.md },
 });

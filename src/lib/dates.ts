@@ -42,9 +42,11 @@ export function weekStart(date: ISODate): ISODate {
   return addDays(date, -((weekday + 6) % 7));
 }
 
-export function formatMonth(ym: YearMonth, style: 'short' | 'long' = 'long') {
+/** 'long' = "October 2026", 'name' = "October", 'short' = "Oct". */
+export function formatMonth(ym: YearMonth, style: 'short' | 'name' | 'long' = 'long') {
   const [y, m] = parts(`${ym}-01`);
-  return style === 'long' ? `${MONTHS_LONG[m - 1]} ${y}` : MONTHS_SHORT[m - 1];
+  if (style === 'short') return MONTHS_SHORT[m - 1];
+  return style === 'name' ? MONTHS_LONG[m - 1] : `${MONTHS_LONG[m - 1]} ${y}`;
 }
 
 /** The app's one date format: "Oct 14". */

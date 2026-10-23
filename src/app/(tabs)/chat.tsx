@@ -3,8 +3,8 @@ import { useHeaderHeight } from 'expo-router/react-navigation';
 import { useRef, useState } from 'react';
 import { FlatList, KeyboardAvoidingView, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { Chip, Screen, TypingDots } from '@/components';
-import { colors, fontSize, fontWeight, layout, radius, spacing } from '@/constants/theme';
+import { Chip, Loading, Screen, TypingDots } from '@/components';
+import { borderWidth, colors, fontSize, layout, radius, spacing, typography } from '@/constants/theme';
 import { useAsync } from '@/hooks/use-async';
 import { getChatHistory, sendChatMessage } from '@/lib/api';
 import type { ChatMessage } from '@/types';
@@ -79,8 +79,9 @@ export default function Chat() {
   const canSend = draft.trim().length > 0 && !typing;
 
   return (
+    // "padding" on Android too: with edge-to-edge (SDK 54+) the window no longer resizes for the keyboard.
     <KeyboardAvoidingView style={styles.flex} behavior="padding" keyboardVerticalOffset={headerHeight}>
-      <Screen scroll={false} contentStyle={styles.content}>
+      <Screen scroll={false} width="narrow" contentStyle={styles.content}>
         <FlatList
           ref={listRef}
           style={styles.flex}
@@ -88,7 +89,7 @@ export default function Chat() {
           data={messages}
           keyExtractor={(m) => m.id}
           renderItem={({ item }) => <Bubble message={item} />}
-          ListEmptyComponent={history.data ? <Welcome onPick={send} /> : undefined}
+          ListEmptyComponent={history.data ? <Welcome onPick={send} /> : <Loading />}
           ListFooterComponent={
             typing ? (
               <View style={[styles.bubble, styles.theirs]}>
@@ -117,6 +118,7 @@ export default function Chat() {
             disabled={!canSend}
             accessibilityRole="button"
             accessibilityLabel="Send"
+            accessibilityState={{ disabled: !canSend }}
             style={({ pressed }) => [styles.send, !canSend && styles.sendDisabled, pressed && styles.pressed]}>
             <Ionicons name="arrow-up" size={layout.iconSize} color={colors.onPrimary} />
           </Pressable>
@@ -141,11 +143,11 @@ const styles = StyleSheet.create({
   theirs: {
     alignSelf: 'flex-start',
     backgroundColor: colors.card,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: borderWidth.hairline,
     borderColor: colors.border,
     borderBottomLeftRadius: radius.sm,
   },
-  bubbleText: { fontSize: fontSize.md, lineHeight: fontSize.md * 1.4, color: colors.text },
+  bubbleText: typography.body,
   mineText: { color: colors.onPrimary },
   summary: {
     alignSelf: 'flex-start',
@@ -155,20 +157,21 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
     gap: spacing.xxs,
   },
-  summaryValue: { fontSize: fontSize.xl, fontWeight: fontWeight.bold },
-  summaryLabel: { fontSize: fontSize.xs, color: colors.muted },
+  summaryValue: typography.stat,
+  summaryLabel: typography.caption,
   welcome: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.sm, paddingVertical: spacing.xxl },
   welcomeIcon: { padding: spacing.lg, borderRadius: radius.pill, backgroundColor: colors.primarySoft, marginBottom: spacing.sm },
-  welcomeTitle: { fontSize: fontSize.xl, fontWeight: fontWeight.bold, color: colors.text, textAlign: 'center' },
-  welcomeText: { fontSize: fontSize.sm, color: colors.muted, textAlign: 'center', maxWidth: layout.readableWidth },
+  welcomeTitle: { ...typography.heading, textAlign: 'center' },
+  welcomeText: { ...typography.muted, textAlign: 'center', maxWidth: layout.readableWidth },
   suggestions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: spacing.sm, marginTop: spacing.md },
   inputBar: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   input: {
     flex: 1,
+    minWidth: 0,
     minHeight: layout.inputHeight,
     paddingHorizontal: spacing.lg,
     borderRadius: radius.pill,
-    borderWidth: 1,
+    borderWidth: borderWidth.thin,
     borderColor: colors.border,
     backgroundColor: colors.card,
     fontSize: fontSize.md,

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Button, Card, Chip, Screen, SectionHeader, TextField } from '@/components';
-import { colors, fontSize, fontWeight, layout, spacing } from '@/constants/theme';
+import { borderWidth, colors, layout, spacing, typography } from '@/constants/theme';
 import { useLayout } from '@/hooks/use-layout';
 import { addCard } from '@/lib/api';
 import { categoryColor, categoryIcon } from '@/lib/categories';
@@ -90,7 +90,7 @@ export default function AddCard() {
   const half = isWide ? styles.flex : undefined;
 
   return (
-    <Screen edges={['bottom']}>
+    <Screen edges={['bottom']} width="narrow">
       <Card>
         <SectionHeader title="Card details" />
         <View style={pair}>
@@ -263,11 +263,11 @@ const styles = StyleSheet.create({
   pair: { gap: spacing.md },
   pairWide: { flexDirection: 'row' },
   field: { gap: spacing.sm },
-  label: { fontSize: fontSize.sm, fontWeight: fontWeight.medium, color: colors.text },
+  label: typography.label,
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  bonus: { gap: spacing.sm, paddingTop: spacing.md, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
+  bonus: { gap: spacing.sm, paddingTop: spacing.md, borderTopWidth: borderWidth.hairline, borderTopColor: colors.border },
   bonusHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  bonusTitle: { flex: 1, fontSize: fontSize.md, fontWeight: fontWeight.semibold, color: colors.text },
+  bonusTitle: { ...typography.subheading, flex: 1 },
   start: { alignSelf: 'flex-start' },
   actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.md },
 });

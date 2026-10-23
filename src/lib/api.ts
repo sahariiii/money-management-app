@@ -11,7 +11,7 @@ import {
   rewardRules as seedRules,
   transactions as seedTransactions,
 } from '@/data/mock';
-import { addDays, daysFrom, lastDayOf, shiftMonth, weekStart } from '@/lib/dates';
+import { addDays, daysFrom, formatMonth, lastDayOf, shiftMonth, weekStart } from '@/lib/dates';
 import { formatMoney } from '@/lib/format';
 import type {
   Alert,
@@ -535,11 +535,9 @@ function restaurantsAnswer(): Answer {
     months.set(t.date.slice(0, 7), (months.get(t.date.slice(0, 7)) ?? 0) + t.amount);
     merchants.set(t.merchant, (merchants.get(t.merchant) ?? 0) + t.amount);
   }
-  const monthName = (ym: YearMonth) =>
-    new Date(`${ym}-01T12:00:00Z`).toLocaleString('en-CA', { month: 'long', timeZone: 'UTC' });
   const breakdown = [...months]
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([ym, amt]) => `${monthName(ym)} ${formatMoney(amt)}`)
+    .map(([ym, amt]) => `${formatMonth(ym, 'name')} ${formatMoney(amt)}`)
     .join(', ');
   const [topMerchant, topAmount] = [...merchants].sort((a, b) => b[1] - a[1])[0] ?? ['none', 0];
 

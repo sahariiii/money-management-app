@@ -10,6 +10,8 @@ type Props = {
   data: WeekTotals[];
   /** Available width for the whole chart, including the y-axis labels. */
   width: number;
+  /** Plot height; defaults to layout.chartHeight. */
+  height?: number;
 };
 
 const Y_AXIS_WIDTH = 44;
@@ -18,7 +20,7 @@ const X_LABEL_WIDTH = 48;
 /** First point sits half a label in, so its date isn't clipped at the left edge. */
 const INITIAL = X_LABEL_WIDTH / 2;
 
-export function WeeklySpendChart({ data, width }: Props) {
+export function WeeklySpendChart({ data, width, height = layout.chartHeight }: Props) {
   const plotWidth = Math.max(width - Y_AXIS_WIDTH - EDGE, 100);
   const step = data.length > 1 ? (plotWidth - INITIAL) / (data.length - 1) : plotWidth;
   // Label every other week on narrow charts so dates don't collide.
@@ -40,7 +42,7 @@ export function WeeklySpendChart({ data, width }: Props) {
         }))}
         labelsExtraHeight={extra}
         width={plotWidth}
-        height={layout.chartHeight}
+        height={height}
         spacing={step}
         initialSpacing={INITIAL}
         endSpacing={0}
