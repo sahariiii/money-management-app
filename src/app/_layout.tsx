@@ -16,9 +16,10 @@ function RootStack() {
         headerShadowVisible: false,
         contentStyle: { backgroundColor: colors.bg },
       }}>
-      {/* Signed out: only the auth group exists, so the app opens on sign-in. */}
+      {/* Signed out: sign-in is the only screen, so the app opens on it. It's a direct
+          child (no (auth) layout) so the guard redirects to /sign-in, not /(auth). */}
       <Stack.Protected guard={!signedIn}>
-        <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+        <Stack.Screen name="(auth)/sign-in" options={{ headerShown: false }} />
       </Stack.Protected>
 
       <Stack.Protected guard={signedIn}>

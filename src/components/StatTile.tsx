@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import type { ComponentProps } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import { colors, fontSize, fontWeight, layout, radius, spacing, type ColorToken } from '@/constants/theme';
 import { Card } from './Card';
@@ -11,6 +11,9 @@ type Props = {
   caption?: string;
   icon?: ComponentProps<typeof Ionicons>['name'];
   tone?: Extract<ColorToken, 'primary' | 'income' | 'expense' | 'warning'>;
+  /** Color the value with the tone (e.g. positive/negative net). */
+  tintValue?: boolean;
+  style?: StyleProp<ViewStyle>;
 };
 
 const softTone = {
@@ -21,9 +24,9 @@ const softTone = {
 } as const;
 
 /** Compact KPI tile. Place several in a flex-wrap row; each grows to fill. */
-export function StatTile({ label, value, caption, icon, tone = 'primary' }: Props) {
+export function StatTile({ label, value, caption, icon, tone = 'primary', tintValue, style }: Props) {
   return (
-    <Card style={styles.tile}>
+    <Card style={[styles.tile, style]}>
       <View style={styles.header}>
         {icon && (
           <View style={[styles.iconWrap, { backgroundColor: softTone[tone] }]}>
@@ -34,7 +37,7 @@ export function StatTile({ label, value, caption, icon, tone = 'primary' }: Prop
           {label}
         </Text>
       </View>
-      <Text style={styles.value} numberOfLines={1} adjustsFontSizeToFit>
+      <Text style={[styles.value, tintValue && { color: colors[tone] }]} numberOfLines={1} adjustsFontSizeToFit>
         {value}
       </Text>
       {caption && <Text style={styles.caption}>{caption}</Text>}
@@ -43,7 +46,7 @@ export function StatTile({ label, value, caption, icon, tone = 'primary' }: Prop
 }
 
 const styles = StyleSheet.create({
-  tile: { flexGrow: 1, flexBasis: 160, gap: spacing.sm },
+  tile: { gap: spacing.sm },
   header: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   iconWrap: {
     width: layout.iconSize + spacing.sm,

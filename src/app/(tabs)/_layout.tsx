@@ -1,9 +1,10 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { Tabs } from 'expo-router';
+import { router, Tabs } from 'expo-router';
 import type { ComponentProps } from 'react';
-import type { ColorValue } from 'react-native';
+import { StyleSheet, View, type ColorValue } from 'react-native';
 
-import { colors, fontWeight } from '@/constants/theme';
+import { Button } from '@/components';
+import { colors, fontWeight, spacing } from '@/constants/theme';
 
 type IconName = ComponentProps<typeof Ionicons>['name'];
 
@@ -40,7 +41,28 @@ export default function TabsLayout() {
       }}>
       <Tabs.Screen
         name="index"
-        options={{ title: 'Home', tabBarIcon: tabIcon('home-outline', 'home') }}
+        options={{
+          title: 'Home',
+          tabBarIcon: tabIcon('home-outline', 'home'),
+          headerRight: () => (
+            <View style={styles.headerActions}>
+              <Button
+                label="Upload"
+                icon="cloud-upload-outline"
+                variant="ghost"
+                size="sm"
+                onPress={() => router.push('/upload-statement')}
+              />
+              <Button
+                label="Scan"
+                icon="camera-outline"
+                variant="ghost"
+                size="sm"
+                onPress={() => router.push('/scan-receipt')}
+              />
+            </View>
+          ),
+        }}
       />
       <Tabs.Screen
         name="transactions"
@@ -64,3 +86,7 @@ export default function TabsLayout() {
     </Tabs>
   );
 }
+
+const styles = StyleSheet.create({
+  headerActions: { flexDirection: 'row', marginRight: spacing.sm },
+});

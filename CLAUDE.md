@@ -25,4 +25,24 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
 - src/components/ — shared UI (Screen, Card, StatTile, ProgressBar, TransactionRow, AlertBanner,
   Chip, SectionHeader, EmptyState). Import from `@/components`.
 - src/constants/theme.ts — design tokens (colors, spacing, radius, fontSize, layout).
-- src/lib/api.ts, src/data/mock.ts — data access layer and mock data (to be added).
+- src/types.ts — domain types mirroring the future DB, plus API response shapes and CATEGORIES.
+- src/lib/api.ts — the only data layer. Async, fake delay, in-memory copy of mock data
+  (recategorize/dismiss persist per session). Summaries, budgets, optimizer and chat answers
+  are computed from transactions, never hardcoded. `today()` returns the demo date.
+- src/data/mock.ts — seeded, deterministic Aug 1 – Oct 22 2026 Canadian data. Demo "today"
+  is 2026-10-23. Planned demo moments: groceries mostly on debit, Rogers $65 → $200 in Oct,
+  messy raw descriptions, Food budget ~85% in Oct, biweekly payroll.
+
+## Gotchas
+- Typed routes (.expo/types/router.d.ts) can go stale while the dev server runs on Windows:
+  new non-route files under src/ show up as routes like `/../lib/api` and tsc rejects real hrefs.
+  Fix: stop the server, delete .expo/types, restart `npx expo start`.
+- After installing packages, restart Metro (`npx expo start --clear`) or web SSR fails with
+  "Requiring unknown module".
+- Sign-in lives at src/app/(auth)/sign-in.tsx with NO (auth)/_layout.tsx, on purpose: with a group
+  layout, Stack.Protected redirects signed-out users to `/(auth)`, which is an unmatched route.
+- Charts use react-native-gifted-charts (+ react-native-svg, expo-linear-gradient). It deep-clones
+  chart data, so never put StyleSheet styles inside data items (frozen → crash); use fresh plain
+  objects. LineChart x-label box width is `spacing + labelsExtraHeight` (the prop is misnamed).
+- Screens fetch with `useAsync(load, key)` (src/hooks/use-async.ts): refetches on focus and when
+  `key` changes. Responsive sizes come from `useLayout()` (src/hooks/use-layout.ts).

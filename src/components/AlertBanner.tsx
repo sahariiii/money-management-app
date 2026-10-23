@@ -5,12 +5,14 @@ import { colors, fontSize, fontWeight, layout, radius, spacing } from '@/constan
 
 type Tone = 'info' | 'warning' | 'danger' | 'success';
 
+type Action = { label: string; onPress: () => void };
+
 type Props = {
   title: string;
   message?: string;
   tone?: Tone;
-  actionLabel?: string;
-  onAction?: () => void;
+  /** First action is emphasized; the rest are plain text buttons. */
+  actions?: Action[];
 };
 
 const toneStyles = {
@@ -20,7 +22,7 @@ const toneStyles = {
   success: { bg: colors.incomeSoft, fg: colors.income, icon: 'checkmark-circle' },
 } as const;
 
-export function AlertBanner({ title, message, tone = 'info', actionLabel, onAction }: Props) {
+export function AlertBanner({ title, message, tone = 'info', actions = [] }: Props) {
   const t = toneStyles[tone];
   return (
     <View style={[styles.banner, { backgroundColor: t.bg }]} accessibilityRole="alert">
@@ -28,12 +30,21 @@ export function AlertBanner({ title, message, tone = 'info', actionLabel, onActi
       <View style={styles.body}>
         <Text style={styles.title}>{title}</Text>
         {message && <Text style={styles.message}>{message}</Text>}
+        {actions.length > 0 && (
+          <View style={styles.actions}>
+            {actions.map((a, i) => (
+              <Pressable
+                key={a.label}
+                onPress={a.onPress}
+                hitSlop={spacing.xs}
+                accessibilityRole="button"
+                style={({ pressed }) => [i === 0 && [styles.primary, { borderColor: t.fg }], pressed && styles.pressed]}>
+                <Text style={[styles.action, { color: i === 0 ? t.fg : colors.muted }]}>{a.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
       </View>
-      {actionLabel && onAction && (
-        <Pressable onPress={onAction} hitSlop={spacing.sm}>
-          <Text style={[styles.action, { color: t.fg }]}>{actionLabel}</Text>
-        </Pressable>
-      )}
     </View>
   );
 }
@@ -41,13 +52,21 @@ export function AlertBanner({ title, message, tone = 'info', actionLabel, onActi
 const styles = StyleSheet.create({
   banner: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: spacing.md,
     padding: spacing.md,
     borderRadius: radius.md,
   },
   body: { flex: 1, gap: spacing.xxs },
   title: { fontSize: fontSize.sm, fontWeight: fontWeight.semibold, color: colors.text },
-  message: { fontSize: fontSize.xs, color: colors.muted },
+  message: { fontSize: fontSize.sm, color: colors.muted },
+  actions: { flexDirection: 'row', alignItems: 'center', gap: spacing.lg, marginTop: spacing.sm },
+  primary: {
+    borderWidth: 1,
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+  },
+  pressed: { opacity: 0.6 },
   action: { fontSize: fontSize.sm, fontWeight: fontWeight.semibold },
 });
