@@ -4,9 +4,8 @@
     uv run uvicorn personal_banker.api:app --host 0.0.0.0 --port 8000
 
 --host 0.0.0.0 lets a phone on the same Wi-Fi reach it (allow port 8000
-through Windows Firewall). With PERSONAL_BANKER_API_TOKEN set (backend/.env),
-every /api request must send it as a bearer token; the app sends
-EXPO_PUBLIC_API_TOKEN.
+through Windows Firewall). Every /api request sends a bearer token: the app's
+Clerk session token, or PERSONAL_BANKER_API_TOKEN from scripts (see auth.py).
 
 It serves the same library as the Streamlit app, so both can run at once; just
 don't process statements in both at the same time, as PaddleOCR-VL needs the
@@ -16,7 +15,6 @@ whole GPU. Response models mirror src/types.ts.
 import hashlib
 import logging
 import os
-import secrets
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -26,7 +24,7 @@ from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Res
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from . import ledger
+from . import auth, ledger
 from .docai import render_pdf
 from .docai.pipeline import EXTRACTION_ENGINE
 from .ledger import AppCategory, AppModel, Card, CategoryUpdate, Transaction
@@ -35,9 +33,7 @@ from .pipeline import MAX_BYTES, PasswordRequired, StatementError, prepare_pdf
 from .service import engine_problem, has_api_key, process_document
 from .store import Library, StoredDocument
 
-TOKEN_ENV = "PERSONAL_BANKER_API_TOKEN"
-
-log = logging.getLogger("uvicorn.error")
+log =logging.getLogger("uvicorn.error")
 library = Library()
 
 
@@ -140,16 +136,24 @@ def _process(doc_id: str) -> None:
 _bearer = HTTPBearer(auto_error=False)
 
 
-def require_token(credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)]) -> None:
-    expected = os.environ.get(TOKEN_ENV)
-    if expected and not (credentials and secrets.compare_digest(credentials.credentials.encode(), expected.encode())):
-        raise HTTPException(401, "Missing or wrong API token.", headers={"WWW-Authenticate": "Bearer"})
+def require_user(credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)]) -> str:
+    """The caller, from the bearer token (see auth.py)."""
+    try:
+        return auth.authorize(credentials.credentials if credentials else None)
+    except auth.AuthError as e:
+        raise HTTPException(e.status, str(e), headers={"WWW-Authenticate": "Bearer"}) from e
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    if not os.environ.get(TOKEN_ENV):
-        log.warning("%s isn't set: anyone who can reach this server can read your statements.", TOKEN_ENV)
+    if auth.is_open():
+        log.warning(
+            "Neither %s nor %s is set: anyone who can reach this server can read your statements.",
+            auth.CLERK_KEY_ENV,
+            auth.TOKEN_ENV,
+        )
+    elif os.environ.get(auth.CLERK_KEY_ENV) and not os.environ.get(auth.ALLOWED_USERS_ENV):
+        log.warning("%s isn't set: anyone who can sign in to the app can read your statements.", auth.ALLOWED_USERS_ENV)
     yield
     _jobs.shutdown(wait=False, cancel_futures=True)
 
@@ -162,7 +166,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-api = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
+api = APIRouter(prefix="/api", dependencies=[Depends(require_user)])
 
 
 @app.get("/api/health")
