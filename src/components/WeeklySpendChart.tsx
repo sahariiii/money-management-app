@@ -3,6 +3,7 @@ import { LineChart } from 'react-native-gifted-charts';
 
 import { colors, fontSize, layout, spacing } from '@/constants/theme';
 import { formatShortDate } from '@/lib/dates';
+import { formatMoneyWhole } from '@/lib/format';
 import type { WeekTotals } from '@/types';
 
 type Props = {
@@ -55,7 +56,8 @@ export function WeeklySpendChart({ data, width }: Props) {
         dataPointsColor={colors.primary}
         noOfSections={4}
         yAxisLabelWidth={Y_AXIS_WIDTH}
-        formatYLabel={(label) => `$${Math.round(Number(label))}`}
+        // Whole dollars on the axis: these are gridlines, not amounts.
+        formatYLabel={(label) => formatMoneyWhole(Number(label))}
         yAxisTextStyle={styles.axisText}
         xAxisLabelTextStyle={styles.axisText}
         yAxisColor={colors.border}
@@ -69,11 +71,11 @@ export function WeeklySpendChart({ data, width }: Props) {
 
 const styles = StyleSheet.create({
   wrap: { overflow: 'hidden' },
-  axisText: { fontSize: fontSize.xs - 1, color: colors.muted },
+  axisText: { fontSize: fontSize.xxs, color: colors.muted },
 });
 
 const xLabelStyle: TextStyle = {
   textAlign: 'center',
-  fontSize: fontSize.xs - 1,
+  fontSize: fontSize.xxs,
   color: colors.muted,
 };

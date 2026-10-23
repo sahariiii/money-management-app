@@ -122,6 +122,17 @@ export type SpendSummary = {
   topMerchants: MerchantSpend[];
 };
 
+export type RecurringBillStatus = RecurringBill & {
+  /** Category of the latest charge, for the icon. */
+  category: Category;
+  /** Last charge vs usual as a fraction: 2.08 = 208% above usual. */
+  changeFromUsual: number;
+  /** The last charge was far above usual (25% or more). */
+  unusual: boolean;
+  /** Days from today to nextDue. */
+  daysUntilDue: number;
+};
+
 export type BudgetStatus = Budget & {
   month: YearMonth;
   spent: number;

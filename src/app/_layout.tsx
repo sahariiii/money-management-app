@@ -1,6 +1,7 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 
+import { ToastProvider } from '@/components';
 import { colors, fontWeight } from '@/constants/theme';
 import { SessionProvider, useSession } from '@/lib/session';
 
@@ -39,8 +40,10 @@ function RootStack() {
 export default function RootLayout() {
   return (
     <SessionProvider>
-      <StatusBar style="dark" />
-      <RootStack />
+      <ToastProvider>
+        <StatusBar style="dark" />
+        <RootStack />
+      </ToastProvider>
     </SessionProvider>
   );
 }

@@ -1,12 +1,12 @@
 import { StyleSheet, Text, TextInput, View, type StyleProp, type TextInputProps, type ViewStyle } from 'react-native';
 
-import { colors, fontSize, fontWeight, layout, radius, spacing } from '@/constants/theme';
+import { borderWidth, colors, fontSize, layout, radius, spacing, typography } from '@/constants/theme';
 
 type Props = Omit<TextInputProps, 'style'> & {
   label: string;
   error?: string;
   hint?: string;
-  /** Shown inside the field before the value, e.g. "$" or "•••• ". */
+  /** Shown inside the field before the value, e.g. "$" or "••••". */
   prefix?: string;
   suffix?: string;
   style?: StyleProp<ViewStyle>;
@@ -33,13 +33,13 @@ export function TextField({ label, error, hint, prefix, suffix, style, ...input 
 
 const styles = StyleSheet.create({
   wrap: { gap: spacing.xs },
-  label: { fontSize: fontSize.sm, fontWeight: fontWeight.medium, color: colors.text },
+  label: typography.label,
   field: {
     flexDirection: 'row',
     alignItems: 'center',
     minHeight: layout.inputHeight,
     paddingHorizontal: spacing.md,
-    borderWidth: 1,
+    borderWidth: borderWidth.thin,
     borderColor: colors.border,
     borderRadius: radius.md,
     backgroundColor: colors.card,
@@ -48,6 +48,6 @@ const styles = StyleSheet.create({
   fieldError: { borderColor: colors.expense },
   input: { flex: 1, minWidth: 0, fontSize: fontSize.md, color: colors.text, paddingVertical: spacing.sm },
   affix: { fontSize: fontSize.md, color: colors.muted },
-  error: { fontSize: fontSize.xs, color: colors.expense },
-  hint: { fontSize: fontSize.xs, color: colors.muted },
+  error: { ...typography.caption, color: colors.expense },
+  hint: typography.caption,
 });

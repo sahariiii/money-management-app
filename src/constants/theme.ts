@@ -1,4 +1,4 @@
-import { Platform } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
 
 export const colors = {
   bg: '#F5F7FB',
@@ -17,6 +17,7 @@ export const colors = {
   border: '#E2E8F0',
   track: '#EDF1F7',
   shadow: '#0F172A',
+  toast: '#1E293B',
 } as const;
 
 /** Chart palette, one color per category. Distinct hues, readable on white. */
@@ -60,7 +61,14 @@ export const radius = {
   pill: 999,
 } as const;
 
+export const borderWidth = {
+  hairline: StyleSheet.hairlineWidth,
+  thin: 1,
+  thick: 2,
+} as const;
+
 export const fontSize = {
+  xxs: 11,
   xs: 12,
   sm: 14,
   md: 16,
@@ -68,6 +76,16 @@ export const fontSize = {
   xl: 22,
   xxl: 28,
   display: 36,
+} as const;
+
+export const lineHeight = {
+  sm: 20,
+  md: 22,
+} as const;
+
+export const letterSpacing = {
+  wide: 0.5,
+  card: 2,
 } as const;
 
 export const fontFamily = {
@@ -81,19 +99,55 @@ export const fontWeight = {
   bold: '700',
 } as const;
 
+/**
+ * The type scale. Spread a preset into a StyleSheet entry (and override color or
+ * alignment if needed) instead of picking sizes and weights by hand.
+ */
+export const typography = {
+  /** Screen greeting, e.g. "Good morning". */
+  title: { fontSize: fontSize.xxl, fontWeight: fontWeight.bold, color: colors.text },
+  /** Section and card titles. */
+  heading: { fontSize: fontSize.lg, fontWeight: fontWeight.bold, color: colors.text },
+  /** Row titles: merchant names, list items. */
+  subheading: { fontSize: fontSize.md, fontWeight: fontWeight.semibold, color: colors.text },
+  body: { fontSize: fontSize.md, lineHeight: lineHeight.md, color: colors.text },
+  bodyMuted: { fontSize: fontSize.md, lineHeight: lineHeight.md, color: colors.muted },
+  /** Form labels and emphasized small text. */
+  label: { fontSize: fontSize.sm, fontWeight: fontWeight.semibold, color: colors.text },
+  small: { fontSize: fontSize.sm, lineHeight: lineHeight.sm, color: colors.text },
+  muted: { fontSize: fontSize.sm, lineHeight: lineHeight.sm, color: colors.muted },
+  caption: { fontSize: fontSize.xs, color: colors.muted },
+  /** Small uppercase labels above groups, e.g. "DATES". */
+  overline: {
+    fontSize: fontSize.xs,
+    fontWeight: fontWeight.semibold,
+    color: colors.muted,
+    textTransform: 'uppercase',
+    letterSpacing: letterSpacing.wide,
+  },
+  /** KPI numbers in stat tiles and summary cards. */
+  stat: { fontSize: fontSize.xl, fontWeight: fontWeight.bold, color: colors.text },
+  /** The big amount on a transaction. */
+  amount: { fontSize: fontSize.display, fontWeight: fontWeight.bold, color: colors.text },
+} as const;
+
 export const layout = {
   maxContentWidth: 900,
+  /** Forms, detail pages and chat: easier to read than the full 900px. */
+  narrowContentWidth: 680,
   readableWidth: 400,
   /** Window width at which layouts switch from phone to wide. */
   wideBreakpoint: 720,
   chartHeight: 180,
   donutRadius: 80,
-  fabSize: 56,
   /** Width / height of a real payment card. */
   cardAspectRatio: 1.586,
   chatBubbleMaxWidth: '82%',
   inputHeight: 44,
   receiptMaxHeight: 320,
+  monthLabelWidth: 120,
+  /** Distance of the toast from the bottom edge, clear of the tab bar. */
+  toastOffset: 72,
   iconSize: 22,
   avatarSize: 40,
   progressHeight: 8,
@@ -107,5 +161,5 @@ export const shadow = {
   elevation: 2,
 } as const;
 
-export const theme = { colors, spacing, radius, fontSize, fontWeight, layout, shadow };
+export const theme = { colors, spacing, radius, fontSize, fontWeight, typography, layout, shadow };
 export type ColorToken = keyof typeof colors;

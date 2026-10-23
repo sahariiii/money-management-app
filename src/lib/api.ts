@@ -5,16 +5,17 @@
 import {
   DEMO_TODAY,
   alerts as seedAlerts,
-  budgets,
+  budgets as seedBudgets,
   cards as seedCards,
   recurringBills,
   rewardRules as seedRules,
   transactions as seedTransactions,
 } from '@/data/mock';
-import { lastDayOf, shiftMonth, weekStart } from '@/lib/dates';
+import { addDays, daysFrom, lastDayOf, shiftMonth, weekStart } from '@/lib/dates';
 import { formatMoney } from '@/lib/format';
 import type {
   Alert,
+  Budget,
   BudgetStatus,
   Card,
   CardOptimizer,
@@ -32,7 +33,7 @@ import type {
   PickedFile,
   RangePreset,
   ReceiptScan,
-  RecurringBill,
+  RecurringBillStatus,
   RewardRule,
   SpendSummary,
   StatementUpload,
@@ -52,6 +53,7 @@ const db = {
   alerts: clone(seedAlerts),
   cards: clone(seedCards),
   rewardRules: clone(seedRules),
+  budgets: clone(seedBudgets),
   chat: [] as ChatMessage[],
   /** merchant -> category, applied when the user picks "always for this merchant". */
   merchantRules: {} as Record<string, Category>,
@@ -93,9 +95,8 @@ export function resolveRange(range: RangePreset | DateRange): DateRange {
 const inRange = (t: Transaction, { from, to }: DateRange) => t.date >= from && t.date <= to;
 const expenses = (txs: Transaction[]) => txs.filter((t) => !t.isIncome);
 
-function daysBetween({ from, to }: DateRange) {
-  return Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1;
-}
+/** Days in a range, counting both ends. */
+const daysIn = ({ from, to }: DateRange) => daysFrom(from, to) + 1;
 
 // ---------------------------------------------------------------------------
 // Cards & transactions
@@ -262,14 +263,10 @@ export async function getWeeklySpend(
     .map(([start, spent]) => ({ weekStart: start, spent: round2(spent) }));
 }
 
-function addDays(date: ISODate, days: number): ISODate {
-  return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
-}
-
 function budgetStatus(month: YearMonth): BudgetStatus[] {
   const range = { from: `${month}-01`, to: lastDayOf(month) };
   const spent = expenses(db.transactions.filter((t) => inRange(t, range)));
-  return budgets.map((b) => {
+  return db.budgets.map((b) => {
     const total = sum(spent.filter((t) => t.category === b.category).map((t) => t.amount));
     return {
       ...b,
@@ -286,12 +283,38 @@ export async function getBudgets(month: YearMonth = currentMonth()): Promise<Bud
   return budgetStatus(month);
 }
 
+/** Creates or updates the monthly limit for a category. */
+export async function setBudget(category: Category, monthlyLimit: number): Promise<Budget> {
+  await delay(250);
+  if (!(monthlyLimit > 0)) throw new Error('Budget limit must be above 0');
+  const limit = round2(monthlyLimit);
+  const existing = db.budgets.find((b) => b.category === category);
+  if (existing) existing.monthlyLimit = limit;
+  else db.budgets.push({ category, monthlyLimit: limit });
+  return { category, monthlyLimit: limit };
+}
+
 // ---------------------------------------------------------------------------
 // Bills & alerts
 
-export async function getRecurringBills(): Promise<RecurringBill[]> {
+/** A bill counts as unusual when the last charge is 25%+ above the usual amount. */
+const UNUSUAL_BILL_CHANGE = 0.25;
+
+export async function getRecurringBills(): Promise<RecurringBillStatus[]> {
   await delay();
-  return clone(recurringBills).sort((a, b) => a.nextDue.localeCompare(b.nextDue));
+  return recurringBills
+    .map((b) => {
+      const changeFromUsual = round2((b.lastAmount - b.expectedAmount) / b.expectedAmount);
+      const lastCharge = db.transactions.filter((t) => t.merchant === b.merchant).at(-1);
+      return {
+        ...clone(b),
+        category: lastCharge?.category ?? 'Other',
+        changeFromUsual,
+        unusual: changeFromUsual >= UNUSUAL_BILL_CHANGE,
+        daysUntilDue: daysFrom(today(), b.nextDue),
+      };
+    })
+    .sort((a, b) => a.nextDue.localeCompare(b.nextDue));
 }
 
 export async function getAlerts(status?: Alert['status']): Promise<Alert[]> {
@@ -401,7 +424,7 @@ function optimize(range: DateRange): CardOptimizer {
   const earned = sum(byCategory.map((c) => c.earned));
   const potential = sum(byCategory.map((c) => c.potential));
   const missed = potential - earned;
-  const yearFactor = 365 / daysBetween(range);
+  const yearFactor = 365 / daysIn(range);
 
   const cardName = (id: string) => {
     const card = db.cards.find((c) => c.id === id);
