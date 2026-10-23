@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import type { ComponentProps } from 'react';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
-import { colors, fontSize, fontWeight, layout, radius, spacing, type ColorToken } from '@/constants/theme';
+import { colors, fontSize, fontWeight, layout, radius, spacing, typography, type ColorToken } from '@/constants/theme';
 import { Card } from './Card';
 
 type Props = {
@@ -23,7 +23,7 @@ const softTone = {
   warning: colors.warningSoft,
 } as const;
 
-/** Compact KPI tile. Place several in a flex-wrap row; each grows to fill. */
+/** Compact KPI tile. Give it a width; screens lay tiles out in a wrapping row. */
 export function StatTile({ label, value, caption, icon, tone = 'primary', tintValue, style }: Props) {
   return (
     <Card style={[styles.tile, style]}>
@@ -37,6 +37,7 @@ export function StatTile({ label, value, caption, icon, tone = 'primary', tintVa
           {label}
         </Text>
       </View>
+      {/* adjustsFontSizeToFit shrinks long amounts on Android; web ignores it and truncates with "…". */}
       <Text style={[styles.value, tintValue && { color: colors[tone] }]} numberOfLines={1} adjustsFontSizeToFit>
         {value}
       </Text>
@@ -55,7 +56,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  label: { flex: 1, fontSize: fontSize.sm, color: colors.muted, fontWeight: fontWeight.medium },
-  value: { fontSize: fontSize.xl, color: colors.text, fontWeight: fontWeight.bold },
-  caption: { fontSize: fontSize.xs, color: colors.muted },
+  label: { ...typography.muted, fontWeight: fontWeight.medium, flex: 1 },
+  value: typography.stat,
+  caption: typography.caption,
 });

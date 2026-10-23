@@ -1,11 +1,14 @@
 // The only data access layer for screens.
 //
 // With EXPO_PUBLIC_API_URL set (see .env.local), transactions, cards and
-// statements come from the FastAPI backend in backend/, and what the backend
-// doesn't have yet (budgets, bills, alerts, card rewards, the assistant) is
-// empty. Without it, everything is mock data from an in-memory copy.
-// Summaries and budgets are computed here from the transactions either way.
+// statements come from the FastAPI backend in backend/, and each request
+// carries the signed-in user's Clerk session token. What the backend doesn't
+// store yet (budgets, bills, alerts, card reward rules, the assistant) starts
+// empty, and anything the user adds to it lasts until the app reloads.
+// Without EXPO_PUBLIC_API_URL everything is mock data from an in-memory copy.
+// Summaries, budgets and the optimizer are computed here from the transactions either way.
 
+import { getClerkInstance } from '@clerk/expo';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
@@ -15,10 +18,10 @@ import {
   budgets as seedBudgets,
   cards as seedCards,
   recurringBills as seedBills,
-  rewardRules as seedRewardRules,
+  rewardRules as seedRules,
   transactions as seedTransactions,
 } from '@/data/mock';
-import { lastDayOf, shiftMonth, weekStart } from '@/lib/dates';
+import { addDays, daysFrom, formatMonth, lastDayOf, shiftMonth, weekStart } from '@/lib/dates';
 import { formatMoney } from '@/lib/format';
 import type {
   Alert,
@@ -31,15 +34,21 @@ import type {
   CategoryUpdate,
   ChatMessage,
   DateRange,
+  FeeCheck,
   ISODate,
   MerchantSpend,
   MonthTotals,
+  NewCardInput,
   OptimizerCategory,
+  PickedFile,
   RangePreset,
+  ReceiptScan,
   RecurringBill,
+  RecurringBillStatus,
   RewardRule,
   SpendSummary,
   Statement,
+  StatementUpload,
   Transaction,
   TransactionFilters,
   WeekTotals,
@@ -47,7 +56,7 @@ import type {
 } from '@/types';
 
 // ---------------------------------------------------------------------------
-// Backend
+// Real backend (FastAPI in backend/)
 
 /** The backend's base URL, or null to serve mock data. */
 function apiUrl(): string | null {
@@ -60,8 +69,9 @@ function apiUrl(): string | null {
 }
 
 const API_URL = apiUrl();
-const API_TOKEN = process.env.EXPO_PUBLIC_API_TOKEN;
-const live = API_URL !== null;
+
+/** Mock data when no backend is configured (EXPO_PUBLIC_API_URL unset). */
+export const USE_MOCK = API_URL === null;
 
 /** A failed backend request. `code` is set when a screen can act on it, e.g. 'password_required'. */
 export class ApiError extends Error {
@@ -76,35 +86,46 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+/** The signed-in user's Clerk session token (a short-lived JWT), or null when signed out. */
+export async function getAuthToken(): Promise<string | null> {
+  // Called outside React, so read the instance ClerkProvider created instead of useAuth().
+  const clerk = getClerkInstance();
+  return (await clerk?.session?.getToken()) ?? null;
+}
+
+/**
+ * fetch() against the backend with `Authorization: Bearer <session token>`.
+ * Never send a user ID: the backend verifies the token and takes the user from it.
+ */
+export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const token = await getAuthToken();
+  if (!token) throw new ApiError(401, 'Not signed in');
+  const headers = new Headers(init.headers);
+  headers.set('Accept', 'application/json');
+  headers.set('Authorization', `Bearer ${token}`);
+  if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json');
+
   let res: Response;
   try {
-    res = await fetch(`${API_URL}${path}`, {
-      ...init,
-      headers: {
-        Accept: 'application/json',
-        ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
-        ...(init.headers as Record<string, string> | undefined),
-      },
-    });
+    res = await fetch(`${API_URL}${path}`, { ...init, headers });
   } catch (e) {
-    // Screens only show a spinner, so say where to look.
+    // Screens mostly show a spinner, so say where to look.
     console.warn(`Can't reach the backend at ${API_URL}. Is it running? (${e})`);
     throw e;
   }
   if (!res.ok) {
     // FastAPI errors are {"detail": "..."} or {"detail": {"code": ..., "message": ...}}.
     const detail = (await res.json().catch(() => null))?.detail;
-    const message = typeof detail === 'string' ? detail : (detail?.message ?? `${res.status} ${res.statusText}`);
+    const message = typeof detail === 'string' ? detail : (detail?.message ?? `${init.method ?? 'GET'} ${path} failed with ${res.status}`);
     throw new ApiError(res.status, message, detail?.code);
   }
-  return res.json() as Promise<T>;
+  return (await res.json()) as T;
 }
 
-/** Like request, but null when the backend says 404. */
-async function requestOrNull<T>(path: string): Promise<T | null> {
+/** Like apiFetch, but null when the backend says 404. */
+async function apiFetchOrNull<T>(path: string): Promise<T | null> {
   try {
-    return await request<T>(path);
+    return await apiFetch<T>(path);
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return null;
     throw e;
@@ -119,35 +140,38 @@ function query(params: Record<string, string | number | undefined>): string {
 }
 
 // ---------------------------------------------------------------------------
-// In-memory data. With mock data, edits (recategorize, dismiss) persist for the
-// session. With the backend, it only holds what the backend doesn't serve yet,
-// which stays empty.
+// In-memory "database". With mock data, edits (recategorize, dismiss, add card,
+// budgets, chat) persist for the session. With the backend it only holds what
+// the backend doesn't store yet: it starts empty and lasts until the app reloads.
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
 const db: {
   transactions: Transaction[];
+  alerts: Alert[];
   cards: Card[];
+  rewardRules: RewardRule[];
   budgets: Budget[];
   recurringBills: RecurringBill[];
-  rewardRules: RewardRule[];
-  alerts: Alert[];
+  chat: ChatMessage[];
   /** merchant -> category, applied when the user picks "always for this merchant". */
   merchantRules: Record<string, Category>;
-} = live
-  ? { transactions: [], cards: [], budgets: [], recurringBills: [], rewardRules: [], alerts: [], merchantRules: {} }
-  : {
+} = USE_MOCK
+  ? {
       transactions: clone(seedTransactions),
-      cards: seedCards,
-      budgets: seedBudgets,
-      recurringBills: seedBills,
-      rewardRules: seedRewardRules,
       alerts: clone(seedAlerts),
+      cards: clone(seedCards),
+      rewardRules: clone(seedRules),
+      budgets: clone(seedBudgets),
+      recurringBills: clone(seedBills),
+      chat: [],
       merchantRules: {},
-    };
+    }
+  : { transactions: [], alerts: [], cards: [], rewardRules: [], budgets: [], recurringBills: [], chat: [], merchantRules: {} };
 
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 /** Fake network latency for mock data. */
-const delay = (ms = 300) => (live ? Promise.resolve() : new Promise<void>((resolve) => setTimeout(resolve, ms)));
+const delay = (ms = 300) => (USE_MOCK ? wait(ms) : Promise.resolve());
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const sum = (values: number[]) => values.reduce((a, b) => a + b, 0);
 
@@ -155,9 +179,9 @@ let allInFlight: Promise<Transaction[]> | null = null;
 
 /** Every transaction, for the summaries computed below. */
 async function allTransactions(): Promise<Transaction[]> {
-  if (live) {
+  if (!USE_MOCK) {
     // Screens load several summaries at once; they share one request.
-    allInFlight ??= request<Transaction[]>('/api/transactions').finally(() => (allInFlight = null));
+    allInFlight ??= apiFetch<Transaction[]>('/api/transactions').finally(() => (allInFlight = null));
     return allInFlight;
   }
   await delay();
@@ -169,7 +193,7 @@ async function allTransactions(): Promise<Transaction[]> {
 
 /** The demo date with mock data, the real date with the backend. */
 export function today(): ISODate {
-  if (!live) return DEMO_TODAY;
+  if (USE_MOCK) return DEMO_TODAY;
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
@@ -199,21 +223,36 @@ export function resolveRange(range: RangePreset | DateRange): DateRange {
 const inRange = (t: Transaction, { from, to }: DateRange) => t.date >= from && t.date <= to;
 const expenses = (txs: Transaction[]) => txs.filter((t) => !t.isIncome);
 
-function daysBetween({ from, to }: DateRange) {
-  return Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1;
-}
+/** Days in a range, counting both ends. */
+const daysIn = ({ from, to }: DateRange) => daysFrom(from, to) + 1;
 
 // ---------------------------------------------------------------------------
 // Cards & transactions
 
+/** With the backend: its cards, plus any added this session (it can't store cards yet). */
 export async function getCards(): Promise<Card[]> {
-  if (live) return request<Card[]>('/api/cards');
+  if (!USE_MOCK) return [...(await apiFetch<Card[]>('/api/cards')), ...clone(db.cards)];
   await delay();
   return clone(db.cards);
 }
 
+export async function getRewardRules(cardId?: string): Promise<RewardRule[]> {
+  await delay(150);
+  return clone(cardId ? db.rewardRules.filter((r) => r.cardId === cardId) : db.rewardRules);
+}
+
+export async function addCard(input: NewCardInput): Promise<Card> {
+  await delay(500);
+  const { rules, ...fields } = input;
+  // Only ever keep the last 4 digits, whatever the caller passes.
+  const card: Card = { ...fields, id: `card_${Date.now()}`, last4: fields.last4.replace(/\D/g, '').slice(-4) };
+  db.cards.push(card);
+  db.rewardRules.push(...rules.map((r) => ({ ...r, cardId: card.id })));
+  return clone(card);
+}
+
 export async function getTransactions(filters: TransactionFilters = {}): Promise<Transaction[]> {
-  if (live) return request<Transaction[]>(`/api/transactions${query(filters)}`);
+  if (!USE_MOCK) return apiFetch<Transaction[]>(`/api/transactions${query(filters)}`);
   await delay();
   const search = filters.search?.trim().toLowerCase();
   const result = db.transactions
@@ -235,7 +274,7 @@ export async function getTransactions(filters: TransactionFilters = {}): Promise
 }
 
 export async function getTransaction(id: string): Promise<Transaction | null> {
-  if (live) return requestOrNull<Transaction>(`/api/transactions/${encodeURIComponent(id)}`);
+  if (!USE_MOCK) return apiFetchOrNull<Transaction>(`/api/transactions/${encodeURIComponent(id)}`);
   await delay(150);
   const tx = db.transactions.find((t) => t.id === id);
   return tx ? clone(tx) : null;
@@ -246,10 +285,9 @@ export async function updateCategory(
   category: Category,
   alwaysForMerchant = false,
 ): Promise<CategoryUpdate> {
-  if (live) {
-    return request<CategoryUpdate>(`/api/transactions/${encodeURIComponent(id)}`, {
+  if (!USE_MOCK) {
+    return apiFetch<CategoryUpdate>(`/api/transactions/${encodeURIComponent(id)}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ category, alwaysForMerchant }),
     });
   }
@@ -365,10 +403,6 @@ export async function getWeeklySpend(
     .map(([start, spent]) => ({ weekStart: start, spent: round2(spent) }));
 }
 
-function addDays(date: ISODate, days: number): ISODate {
-  return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
-}
-
 function budgetStatus(all: Transaction[], month: YearMonth): BudgetStatus[] {
   const range = { from: `${month}-01`, to: lastDayOf(month) };
   const spent = expenses(all.filter((t) => inRange(t, range)));
@@ -388,12 +422,38 @@ export async function getBudgets(month: YearMonth = currentMonth()): Promise<Bud
   return budgetStatus(await allTransactions(), month);
 }
 
+/** Creates or updates the monthly limit for a category. */
+export async function setBudget(category: Category, monthlyLimit: number): Promise<Budget> {
+  await delay(250);
+  if (!(monthlyLimit > 0)) throw new Error('Budget limit must be above 0');
+  const limit = round2(monthlyLimit);
+  const existing = db.budgets.find((b) => b.category === category);
+  if (existing) existing.monthlyLimit = limit;
+  else db.budgets.push({ category, monthlyLimit: limit });
+  return { category, monthlyLimit: limit };
+}
+
 // ---------------------------------------------------------------------------
 // Bills & alerts
 
-export async function getRecurringBills(): Promise<RecurringBill[]> {
+/** A bill counts as unusual when the last charge is 25%+ above the usual amount. */
+const UNUSUAL_BILL_CHANGE = 0.25;
+
+export async function getRecurringBills(): Promise<RecurringBillStatus[]> {
   await delay();
-  return clone(db.recurringBills).sort((a, b) => a.nextDue.localeCompare(b.nextDue));
+  return db.recurringBills
+    .map((b) => {
+      const changeFromUsual = round2((b.lastAmount - b.expectedAmount) / b.expectedAmount);
+      const lastCharge = db.transactions.filter((t) => t.merchant === b.merchant).at(-1);
+      return {
+        ...clone(b),
+        category: lastCharge?.category ?? 'Other',
+        changeFromUsual,
+        unusual: changeFromUsual >= UNUSUAL_BILL_CHANGE,
+        daysUntilDue: daysFrom(today(), b.nextDue),
+      };
+    })
+    .sort((a, b) => a.nextDue.localeCompare(b.nextDue));
 }
 
 export async function getAlerts(status?: Alert['status']): Promise<Alert[]> {
@@ -458,6 +518,7 @@ function optimize(all: Transaction[], cards: Card[], range: DateRange): CardOpti
   type Acc = { spent: number; earned: number; potential: number; byCard: Map<string, number>; bestByCard: Map<string, number> };
   const cats = new Map<Category, Acc>();
   const perCard = new Map<string, { spent: number; earned: number }>();
+  const potentialByCard = new Map<string, number>();
 
   for (const t of txs) {
     const earned = rewardFor(t.cardId, t, actualUsage, true);
@@ -473,6 +534,7 @@ function optimize(all: Transaction[], cards: Card[], range: DateRange): CardOpti
       }
     }
     rewardFor(bestCard, t, bestUsage, true);
+    potentialByCard.set(bestCard, (potentialByCard.get(bestCard) ?? 0) + bestReward);
 
     const acc = cats.get(t.category) ?? { spent: 0, earned: 0, potential: 0, byCard: new Map(), bestByCard: new Map() };
     acc.spent += t.amount;
@@ -501,7 +563,7 @@ function optimize(all: Transaction[], cards: Card[], range: DateRange): CardOpti
   const earned = sum(byCategory.map((c) => c.earned));
   const potential = sum(byCategory.map((c) => c.potential));
   const missed = potential - earned;
-  const yearFactor = 365 / daysBetween(range);
+  const yearFactor = 365 / daysIn(range);
 
   const cardName = (id: string) => {
     const card = cards.find((c) => c.id === id);
@@ -513,14 +575,18 @@ function optimize(all: Transaction[], cards: Card[], range: DateRange): CardOpti
     .slice(0, 3)
     .map((c) => `Use ${cardName(c.bestCardId)} for ${c.category}: you'd have earned ${formatMoney(c.missed)} more in this period.`);
 
-  for (const card of cards.filter((c) => c.annualFee > 0)) {
-    const perYear = sum(byCategory.filter((c) => c.bestCardId === card.id).map((c) => c.potential)) * yearFactor;
-    tips.push(
-      perYear >= card.annualFee
-        ? `Used for the right categories, ${card.nickname} earns about ${formatMoney(perYear)}/yr, covering its ${formatMoney(card.annualFee)} fee.`
-        : `${card.nickname} would earn about ${formatMoney(perYear)}/yr at your spending, less than its ${formatMoney(card.annualFee)} fee.`,
-    );
-  }
+  const feeChecks: FeeCheck[] = cards
+    .filter((c) => c.annualFee > 0)
+    .map((c) => {
+      const earnedPerYear = round2((perCard.get(c.id)?.earned ?? 0) * yearFactor);
+      return {
+        cardId: c.id,
+        annualFee: c.annualFee,
+        earnedPerYear,
+        potentialPerYear: round2((potentialByCard.get(c.id) ?? 0) * yearFactor),
+        covered: earnedPerYear >= c.annualFee,
+      };
+    });
 
   return {
     range,
@@ -533,69 +599,30 @@ function optimize(all: Transaction[], cards: Card[], range: DateRange): CardOpti
       const v = perCard.get(c.id) ?? { spent: 0, earned: 0 };
       return { cardId: c.id, spent: round2(v.spent), earned: round2(v.earned) };
     }),
+    feeChecks,
     tips,
   };
 }
 
 export async function getCardOptimizer(period: RangePreset | DateRange = 'last-3-months'): Promise<CardOptimizer> {
-  const range = resolveRange(period);
-  // The backend has no card reward rules yet, so there is nothing to optimize.
-  if (live) return { range, earned: 0, potential: 0, missed: 0, missedPerYear: 0, byCategory: [], byCard: [], tips: [] };
   const [txs, cards] = await Promise.all([allTransactions(), getCards()]);
-  return optimize(txs, cards, range);
-}
-
-// ---------------------------------------------------------------------------
-// Statements (backend only: mock data has none)
-
-/** A picked file, as expo-document-picker returns it; `file` is set on web. */
-export type UploadFile = { uri: string; name: string; mimeType?: string; file?: File };
-
-const NEEDS_BACKEND = 'Statements need the backend: set EXPO_PUBLIC_API_URL in .env.local.';
-
-/** Newest first. */
-export async function getStatements(): Promise<Statement[]> {
-  return live ? request<Statement[]>('/api/statements') : [];
-}
-
-export async function getStatement(id: string): Promise<Statement | null> {
-  return live ? requestOrNull<Statement>(`/api/statements/${encodeURIComponent(id)}`) : null;
-}
-
-/**
- * Uploads a PDF statement. The backend reads and categorizes it in the
- * background: poll getStatement(id) until its status isn't 'processing'.
- * Throws an ApiError with code 'password_required' when the PDF needs a
- * password (or the one given was wrong); ask for it and upload again.
- */
-export async function uploadStatement(file: UploadFile, password?: string): Promise<Statement> {
-  if (!live) throw new Error(NEEDS_BACKEND);
-  const form = new FormData();
-  if (file.file) form.append('file', file.file, file.name);
-  // React Native's fetch uploads a { uri, name, type } part from the file on the device.
-  else form.append('file', { uri: file.uri, name: file.name, type: file.mimeType ?? 'application/pdf' } as unknown as Blob);
-  if (password) form.append('password', password);
-  return request<Statement>('/api/statements', { method: 'POST', body: form });
-}
-
-/** Processes a statement again after it stopped short (status 'incomplete'). */
-export async function processStatement(id: string): Promise<Statement> {
-  if (!live) throw new Error(NEEDS_BACKEND);
-  return request<Statement>(`/api/statements/${encodeURIComponent(id)}/process`, { method: 'POST' });
+  return optimize(txs, cards, resolveRange(period));
 }
 
 // ---------------------------------------------------------------------------
 // Assistant (canned answers computed from the mock data until the agent backend exists)
 
+type Answer = Pick<ChatMessage, 'text' | 'summary'>;
+
 let messageSeq = 0;
-const message = (role: ChatMessage['role'], text: string): ChatMessage => ({
+const message = (role: ChatMessage['role'], answer: Answer): ChatMessage => ({
   id: `msg_${Date.now()}_${messageSeq++}`,
   role,
-  text,
   createdAt: new Date().toISOString(),
+  ...answer,
 });
 
-function onTrackAnswer(all: Transaction[]): string {
+function onTrackAnswer(all: Transaction[]): Answer {
   const month = currentMonth();
   const dayOfMonth = Number(today().slice(8));
   const daysLeft = Number(lastDayOf(month).slice(8)) - dayOfMonth;
@@ -614,20 +641,29 @@ function onTrackAnswer(all: Transaction[]): string {
   if (hot.length === 0) {
     lines.unshift('Yes, you are on track.');
     lines.push('Every budget is under 80%.');
-  } else {
-    lines.unshift(hot.some((b) => b.ratio >= 1) ? 'Not quite.' : 'Mostly, with one thing to watch.');
-    for (const b of hot) {
-      lines.push(
-        `${b.category}: ${formatMoney(b.spent)} of ${formatMoney(b.monthlyLimit)} (${Math.round(b.ratio * 100)}%) with ${daysLeft} days left.`,
-      );
-    }
-    const others = statuses.length - hot.length;
-    if (others > 0) lines.push(`Your other ${others} budgets are under 80%.`);
+    return { text: lines.join(' '), summary: { value: formatMoney(thisMonth), label: 'Spent this month', tone: 'primary' } };
   }
-  return lines.join(' ');
+
+  lines.unshift(hot.some((b) => b.ratio >= 1) ? 'Not quite.' : 'Mostly, with one thing to watch.');
+  for (const b of hot) {
+    lines.push(
+      `${b.category}: ${formatMoney(b.spent)} of ${formatMoney(b.monthlyLimit)} (${Math.round(b.ratio * 100)}%) with ${daysLeft} days left.`,
+    );
+  }
+  const others = statuses.length - hot.length;
+  if (others > 0) lines.push(`Your other ${others} budgets are under 80%.`);
+  const top = hot[0];
+  return {
+    text: lines.join(' '),
+    summary: {
+      value: `${Math.round(top.ratio * 100)}%`,
+      label: `${top.category} budget used`,
+      tone: top.ratio >= 1 ? 'expense' : 'warning',
+    },
+  };
 }
 
-function restaurantsAnswer(all: Transaction[]): string {
+function restaurantsAnswer(all: Transaction[]): Answer {
   const range = { from: '2026-07-01', to: today() };
   const food = all.filter((t) => t.category === 'Food' && !t.isIncome && inRange(t, range));
   const total = sum(food.map((t) => t.amount));
@@ -638,30 +674,178 @@ function restaurantsAnswer(all: Transaction[]): string {
     months.set(t.date.slice(0, 7), (months.get(t.date.slice(0, 7)) ?? 0) + t.amount);
     merchants.set(t.merchant, (merchants.get(t.merchant) ?? 0) + t.amount);
   }
-  const monthName = (ym: YearMonth) =>
-    new Date(`${ym}-01T12:00:00Z`).toLocaleString('en-CA', { month: 'long', timeZone: 'UTC' });
   const breakdown = [...months]
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([ym, amt]) => `${monthName(ym)} ${formatMoney(amt)}`)
+    .map(([ym, amt]) => `${formatMonth(ym, 'name')} ${formatMoney(amt)}`)
     .join(', ');
   const [topMerchant, topAmount] = [...merchants].sort((a, b) => b[1] - a[1])[0] ?? ['none', 0];
 
-  return (
-    `Since July you've spent ${formatMoney(total)} on restaurants, cafés and takeout across ${food.length} purchases ` +
-    `(${breakdown}; my records start in August). Your top spot is ${topMerchant} at ${formatMoney(topAmount)}.`
-  );
+  return {
+    text:
+      `Since July you've spent ${formatMoney(total)} on restaurants, cafés and takeout across ${food.length} purchases ` +
+      `(${breakdown}; my records start in August). Your top spot is ${topMerchant} at ${formatMoney(topAmount)}.`,
+    summary: { value: formatMoney(total), label: 'Restaurants & takeout since July', tone: 'expense' },
+  };
 }
 
-const FALLBACK =
-  "I'm still learning your habits. I can help with budgets, spending by category, upcoming bills and " +
-  'which card to use. Try "Am I on track this month?" or "How much on restaurants since July?"';
+function cardAnswer(question: string, all: Transaction[], cards: Card[]): Answer {
+  const opt = optimize(all, cards, resolveRange('this-month'));
+  const asked = opt.byCategory.find((c) => question.includes(c.category.toLowerCase()));
+  const pick = asked ?? opt.byCategory[0];
+  if (!pick) return { text: "You haven't spent anything on cards this month yet." };
 
+  const best = cards.find((c) => c.id === pick.bestCardId);
+  const rate = best ? ruleFor(best.id, pick.category)?.ratePercent ?? 0 : 0;
+  const name = best ? `${best.nickname} (•••• ${best.last4})` : 'your best card';
+  const category = pick.category.toLowerCase();
+
+  if (pick.missed < 0.01) {
+    return { text: `You're already using ${name} for ${category}, which is the best option at ${rate}% back.` };
+  }
+  return {
+    text:
+      `Use ${name} for ${category}: it pays ${rate}% back. This month you put ${formatMoney(pick.spent - (pick.spendByCard.find((c) => c.cardId === pick.bestCardId)?.amount ?? 0))} ` +
+      `of ${category} on a card that earns less, which left ${formatMoney(pick.missed)} on the table.`,
+    summary: { value: `+${formatMoney(pick.missed)}`, label: `More cashback on ${category} this month`, tone: 'income' },
+  };
+}
+
+const FALLBACK: Answer = {
+  text:
+    "I'm still learning your habits. I can help with budgets, spending by category and which card to use. " +
+    'Try "Am I on track this month?" or "How much on restaurants since July?"',
+};
+
+const NOT_CONNECTED: Answer = { text: "The assistant isn't connected to the backend yet." };
+
+export async function getChatHistory(): Promise<ChatMessage[]> {
+  await delay(150);
+  return clone(db.chat);
+}
+
+/** Stores the user's message, then returns (and stores) the assistant's reply. */
 export async function sendChatMessage(text: string): Promise<ChatMessage> {
-  if (live) return message('assistant', "The assistant isn't connected to the backend yet.");
-  await delay(900);
+  db.chat.push(message('user', { text }));
+  await delay(1200);
   const q = text.toLowerCase();
-  let answer = FALLBACK;
-  if (q.includes('on track')) answer = onTrackAnswer(db.transactions);
-  else if (/restaurant|eating out|dining|takeout|take-out/.test(q)) answer = restaurantsAnswer(db.transactions);
-  return message('assistant', answer);
+  let answer = USE_MOCK ? FALLBACK : NOT_CONNECTED;
+  if (USE_MOCK) {
+    if (q.includes('on track')) answer = onTrackAnswer(db.transactions);
+    else if (/restaurant|eating out|dining|takeout|take-out/.test(q)) answer = restaurantsAnswer(db.transactions);
+    else if (/\bcard\b|cashback|rewards?/.test(q)) answer = cardAnswer(q, db.transactions, db.cards);
+  }
+  const reply = message('assistant', answer);
+  db.chat.push(reply);
+  return clone(reply);
+}
+
+// ---------------------------------------------------------------------------
+// Statements and receipts
+
+const NEEDS_BACKEND = 'Statements need the backend: set EXPO_PUBLIC_API_URL in .env.local.';
+/** How long uploadStatement waits for the backend to read a statement, and how often it checks. */
+const UPLOAD_TIMEOUT_MS = 20 * 60_000;
+const POLL_MS = 2000;
+
+/** Statements uploaded to the backend, newest first. */
+export async function getStatements(): Promise<Statement[]> {
+  return USE_MOCK ? [] : apiFetch<Statement[]>('/api/statements');
+}
+
+export async function getStatement(id: string): Promise<Statement | null> {
+  return USE_MOCK ? null : apiFetchOrNull<Statement>(`/api/statements/${encodeURIComponent(id)}`);
+}
+
+/** Processes a statement again after it stopped short (status 'incomplete'). */
+export async function processStatement(id: string): Promise<Statement> {
+  if (USE_MOCK) throw new Error(NEEDS_BACKEND);
+  return apiFetch<Statement>(`/api/statements/${encodeURIComponent(id)}/process`, { method: 'POST' });
+}
+
+/**
+ * Uploads a PDF statement and resolves once the backend has read and
+ * categorized it, which can take minutes. Throws an ApiError with code
+ * 'password_required' when the PDF needs a password (or the one given was
+ * wrong), and with code 'incomplete' when the backend couldn't finish.
+ */
+export async function uploadStatement(file: PickedFile, password?: string): Promise<StatementUpload> {
+  if (USE_MOCK) return mockUploadStatement(file);
+
+  const form = new FormData();
+  if (Platform.OS === 'web') {
+    // On web the picker's uri is a blob: or data: URL for the chosen file.
+    form.append('file', await (await fetch(file.uri)).blob(), file.name);
+  } else {
+    // React Native's fetch uploads a { uri, name, type } part from the file on the device.
+    form.append('file', { uri: file.uri, name: file.name, type: file.mimeType ?? 'application/pdf' } as unknown as Blob);
+  }
+  if (password) form.append('password', password);
+
+  let statement = await apiFetch<Statement>('/api/statements', { method: 'POST', body: form });
+  // A statement that is already in the library comes back done straight away.
+  const alreadyThere = statement.status === 'done';
+  const started = Date.now();
+  while (statement.status === 'processing') {
+    if (Date.now() - started > UPLOAD_TIMEOUT_MS) {
+      throw new ApiError(504, 'The statement is still being read. Check back in a few minutes.', 'timeout');
+    }
+    await wait(POLL_MS);
+    statement = await apiFetch<Statement>(`/api/statements/${encodeURIComponent(statement.id)}`);
+  }
+  if (statement.status === 'incomplete') {
+    throw new ApiError(422, statement.message ?? "The statement couldn't be read.", 'incomplete');
+  }
+
+  // Transaction ids start with their statement's id.
+  const rows = (await allTransactions()).filter((t) => t.id.startsWith(`${statement.id}-`));
+  const dates = rows.map((t) => t.date).sort();
+  return {
+    fileName: file.name,
+    transactionsFound: rows.length,
+    range: { from: dates[0] ?? today(), to: dates.at(-1) ?? today() },
+    totalSpent: round2(sum(rows.filter((t) => !t.isIncome).map((t) => t.amount))),
+    totalIncome: round2(sum(rows.filter((t) => t.isIncome).map((t) => t.amount))),
+    alreadyInLedger: alreadyThere ? rows.length : 0,
+    newTransactions: alreadyThere ? 0 : rows.length,
+    balanceCheck: 'not_checked',
+  };
+}
+
+async function mockUploadStatement(file: PickedFile): Promise<StatementUpload> {
+  await delay(2400);
+  // Pretend the statement holds the 40 most recent ledger rows, so everything matches.
+  const rows = [...db.transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 40);
+  const dates = rows.map((t) => t.date).sort();
+  return {
+    fileName: file.name,
+    transactionsFound: rows.length,
+    range: { from: dates[0], to: dates[dates.length - 1] },
+    totalSpent: round2(sum(rows.filter((t) => !t.isIncome).map((t) => t.amount))),
+    totalIncome: round2(sum(rows.filter((t) => t.isIncome).map((t) => t.amount))),
+    alreadyInLedger: rows.length,
+    newTransactions: 0,
+    balanceCheck: 'passed',
+  };
+}
+
+const HST = 0.13;
+
+export async function scanReceipt(image: PickedFile): Promise<ReceiptScan> {
+  void image;
+  if (!USE_MOCK) throw new Error("Receipt scanning isn't connected to the backend yet.");
+  await delay(2000);
+  // Pretend every photo is the Gusto 101 dinner receipt, which is already in the ledger.
+  const match = db.transactions.find((t) => t.merchant === 'Gusto 101') ?? null;
+  const total = match?.amount ?? 84.6;
+  const subtotal = round2(total / (1 + HST));
+  return {
+    merchant: match?.merchant ?? 'Gusto 101',
+    date: match?.date ?? today(),
+    subtotal,
+    tax: round2(total - subtotal),
+    taxLabel: 'HST 13%',
+    total,
+    currency: 'CAD',
+    matchedTransaction: match ? clone(match) : null,
+  };
 }

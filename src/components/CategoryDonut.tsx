@@ -1,9 +1,9 @@
 import { StyleSheet, Text, View } from 'react-native';
 import { PieChart } from 'react-native-gifted-charts';
 
-import { categoryColors, colors, fontSize, fontWeight, layout, radius, spacing } from '@/constants/theme';
+import { categoryColors, colors, fontWeight, layout, radius, spacing, typography } from '@/constants/theme';
 import { categoryColor } from '@/lib/categories';
-import { formatMoney, formatMoneyWhole } from '@/lib/format';
+import { formatMoney } from '@/lib/format';
 import type { CategorySpend } from '@/types';
 
 type Props = {
@@ -29,11 +29,11 @@ export function CategoryDonut({ data, horizontal = false, maxSlices = 6 }: Props
         donut
         data={slices.map((s) => ({ value: s.amount, color: s.color }))}
         radius={layout.donutRadius}
-        innerRadius={layout.donutRadius * 0.64}
+        innerRadius={layout.donutRadius * 0.66}
         innerCircleColor={colors.card}
         centerLabelComponent={() => (
           <View style={styles.center}>
-            <Text style={styles.centerValue}>{formatMoneyWhole(total)}</Text>
+            <Text style={styles.centerValue}>{formatMoney(total)}</Text>
             <Text style={styles.centerLabel}>spent</Text>
           </View>
         )}
@@ -58,12 +58,12 @@ const styles = StyleSheet.create({
   wrap: { alignItems: 'center', gap: spacing.lg },
   wrapHorizontal: { flexDirection: 'row', alignItems: 'center' },
   center: { alignItems: 'center' },
-  centerValue: { fontSize: fontSize.lg, fontWeight: fontWeight.bold, color: colors.text },
-  centerLabel: { fontSize: fontSize.xs, color: colors.muted },
+  centerValue: { ...typography.label, fontWeight: fontWeight.bold },
+  centerLabel: typography.caption,
   legend: { flex: 1, alignSelf: 'stretch', gap: spacing.sm, justifyContent: 'center' },
   legendRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  dot: { width: spacing.md - 2, height: spacing.md - 2, borderRadius: radius.pill },
-  legendLabel: { flex: 1, fontSize: fontSize.sm, color: colors.text },
-  legendValue: { fontSize: fontSize.sm, color: colors.text, fontWeight: fontWeight.medium },
-  legendShare: { width: spacing.xxl + spacing.xs, textAlign: 'right', fontSize: fontSize.xs, color: colors.muted },
+  dot: { width: spacing.sm + spacing.xxs, height: spacing.sm + spacing.xxs, borderRadius: radius.pill },
+  legendLabel: { ...typography.small, flex: 1 },
+  legendValue: { ...typography.small, fontWeight: fontWeight.medium },
+  legendShare: { ...typography.caption, width: spacing.xxl + spacing.xs, textAlign: 'right' },
 });

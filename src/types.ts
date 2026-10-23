@@ -86,6 +86,8 @@ export type ChatMessage = {
   role: 'user' | 'assistant';
   text: string;
   createdAt: string;
+  /** Optional headline number shown as a small card under an assistant answer. */
+  summary?: { value: string; label: string; tone?: 'primary' | 'income' | 'expense' | 'warning' };
 };
 
 // ---- API shapes (computed, not stored) ----
@@ -120,6 +122,17 @@ export type SpendSummary = {
   topMerchants: MerchantSpend[];
 };
 
+export type RecurringBillStatus = RecurringBill & {
+  /** Category of the latest charge, for the icon. */
+  category: Category;
+  /** Last charge vs usual as a fraction: 2.08 = 208% above usual. */
+  changeFromUsual: number;
+  /** The last charge was far above usual (25% or more). */
+  unusual: boolean;
+  /** Days from today to nextDue. */
+  daysUntilDue: number;
+};
+
 export type BudgetStatus = Budget & {
   month: YearMonth;
   spent: number;
@@ -138,6 +151,17 @@ export type OptimizerCategory = {
   spendByCard: { cardId: string; amount: number }[];
 };
 
+export type FeeCheck = {
+  cardId: string;
+  annualFee: number;
+  /** What the card actually earned in the period, scaled to 12 months. */
+  earnedPerYear: number;
+  /** What it would earn if used for every category where it's the best card. */
+  potentialPerYear: number;
+  /** earnedPerYear >= annualFee */
+  covered: boolean;
+};
+
 export type CardOptimizer = {
   range: DateRange;
   earned: number;
@@ -147,10 +171,32 @@ export type CardOptimizer = {
   missedPerYear: number;
   byCategory: OptimizerCategory[];
   byCard: { cardId: string; spent: number; earned: number }[];
+  /** One entry per card with an annual fee. */
+  feeChecks: FeeCheck[];
   tips: string[];
 };
 
 export type CategoryUpdate = { transaction: Transaction; affectedCount: number };
+
+export type NewCardInput = Omit<Card, 'id'> & {
+  rules: Omit<RewardRule, 'cardId'>[];
+};
+
+/** Metadata of a file the user picked; the mock never reads its contents. */
+export type PickedFile = { name: string; size?: number; mimeType?: string; uri: string };
+
+export type StatementUpload = {
+  fileName: string;
+  transactionsFound: number;
+  range: DateRange;
+  totalSpent: number;
+  totalIncome: number;
+  /** Rows already in the ledger (skipped as duplicates). */
+  alreadyInLedger: number;
+  newTransactions: number;
+  /** not_checked: the backend doesn't reconcile opening and closing balances yet. */
+  balanceCheck: 'passed' | 'failed' | 'not_checked';
+};
 
 /** A bank statement uploaded to the backend. */
 export type Statement = {
@@ -166,4 +212,16 @@ export type Statement = {
   message: string | null;
   /** Transactions it added to the ledger, once done. */
   transactionCount: number | null;
+};
+
+export type ReceiptScan = {
+  merchant: string;
+  date: ISODate;
+  subtotal: number;
+  tax: number;
+  taxLabel: string;
+  total: number;
+  currency: string;
+  /** Existing ledger transaction this receipt matches, if any. */
+  matchedTransaction: Transaction | null;
 };

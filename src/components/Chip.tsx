@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, Text } from 'react-native';
 
-import { colors, fontSize, fontWeight, radius, spacing } from '@/constants/theme';
+import { borderWidth, colors, fontWeight, radius, spacing, typography } from '@/constants/theme';
 
 type Props = {
   label: string;
@@ -26,13 +26,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.xs + spacing.xxs,
     borderRadius: radius.pill,
-    borderWidth: 1,
+    borderWidth: borderWidth.thin,
     borderColor: colors.border,
     backgroundColor: colors.card,
     alignSelf: 'flex-start',
   },
   selected: { backgroundColor: colors.primary, borderColor: colors.primary },
   pressed: { opacity: 0.7 },
-  label: { fontSize: fontSize.sm, color: colors.text, fontWeight: fontWeight.medium },
+  label: { ...typography.small, fontWeight: fontWeight.medium },
   labelSelected: { color: colors.onPrimary },
 });

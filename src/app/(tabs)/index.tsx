@@ -1,22 +1,24 @@
+import { useUser } from '@clerk/expo';
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import {
-  AlertBanner,
+  AlertItem,
+  BudgetRow,
   Button,
   Card,
   CategoryDonut,
+  Divider,
   EmptyState,
   Loading,
   MonthSelector,
-  ProgressBar,
   Screen,
   SectionHeader,
   StatTile,
   WeeklySpendChart,
 } from '@/components';
-import { colors, fontSize, fontWeight, spacing } from '@/constants/theme';
+import { colors, layout, lineHeight, spacing, typography } from '@/constants/theme';
 import { useAsync } from '@/hooks/use-async';
 import { useLayout } from '@/hooks/use-layout';
 import {
@@ -33,14 +35,6 @@ import {
 } from '@/lib/api';
 import { formatMonth, formatShortDate, monthRange } from '@/lib/dates';
 import { formatMoney } from '@/lib/format';
-import type { Alert } from '@/types';
-
-const ALERT_UI: Record<Alert['type'], { title: string; tone: 'warning' | 'danger' | 'info' }> = {
-  bill_change: { title: 'Bill went up', tone: 'danger' },
-  budget: { title: 'Budget check', tone: 'warning' },
-  duplicate: { title: 'Possible duplicate', tone: 'info' },
-  unusual: { title: 'Unusual charge', tone: 'warning' },
-};
 
 function greeting() {
   const h = new Date().getHours();
@@ -49,6 +43,8 @@ function greeting() {
 
 export default function Home() {
   const { isWide, contentWidth } = useLayout();
+  const { user } = useUser();
+  const name = user?.firstName || user?.primaryEmailAddress?.emailAddress;
   const [month, setMonth] = useState(currentMonth());
   const range = monthRange(month, today());
   const isCurrent = month === currentMonth();
@@ -61,33 +57,35 @@ export default function Home() {
   const alerts = useAsync(() => getAlerts('open'));
   const weekly = useAsync(() => getWeeklySpend('last-3-months'));
 
-  const gap = spacing.md;
+  const gap = spacing.lg;
   const tileCols = isWide ? 3 : 2;
   const tileWidth = (contentWidth - gap * (tileCols - 1)) / tileCols;
-  const chartCardWidth = isWide ? (contentWidth - gap) / 2 : contentWidth;
-  const chartWidth = chartCardWidth - spacing.lg * 2;
+  const half = isWide ? (contentWidth - gap) / 2 : contentWidth;
+  const chartWidth = half - spacing.lg * 2;
 
   const onDismiss = async (id: string) => {
     alerts.setData((alerts.data ?? []).filter((a) => a.id !== id));
     await dismissAlert(id);
   };
 
-  const onCheck = (alert: Alert) => {
-    if (alert.transactionId) router.push(`/transaction/${alert.transactionId}`);
-    else router.push('/transactions');
-  };
-
   const s = summary.data;
   const topBudgets = [...(budgets.data ?? [])].sort((a, b) => b.spent - a.spent).slice(0, 4);
   const tip = optimizer.data?.byCategory.find((c) => c.missed >= 1);
   const tipCard = cards.data?.find((c) => c.id === tip?.bestCardId);
+  const tipShareElsewhere = tip
+    ? Math.round(((tip.spent - (tip.spendByCard.find((c) => c.cardId === tip.bestCardId)?.amount ?? 0)) / tip.spent) * 100)
+    : 0;
   const periodLabel = isCurrent ? 'this month' : `in ${formatMonth(month, 'short')}`;
+  const noWeeklySpend = weekly.data?.every((w) => w.spent === 0);
 
   return (
     <Screen>
       <View style={[styles.header, isWide && styles.headerWide]}>
         <View style={styles.headerText}>
-          <Text style={styles.greeting}>{greeting()}</Text>
+          <Text style={styles.greeting}>
+            {greeting()}
+            {name ? `, ${name}` : ''}
+          </Text>
           <Text style={styles.subtitle}>
             {isCurrent ? `Here's your month so far (to ${formatShortDate(range.to)})` : "Here's how the month went"}
           </Text>
@@ -96,16 +94,7 @@ export default function Home() {
       </View>
 
       {(alerts.data ?? []).map((a) => (
-        <AlertBanner
-          key={a.id}
-          tone={ALERT_UI[a.type].tone}
-          title={ALERT_UI[a.type].title}
-          message={a.message}
-          actions={[
-            { label: 'Check', onPress: () => onCheck(a) },
-            { label: 'This is fine', onPress: () => onDismiss(a.id) },
-          ]}
-        />
+        <AlertItem key={a.id} alert={a} onDismiss={onDismiss} />
       ))}
 
       {!s ? (
@@ -141,50 +130,56 @@ export default function Home() {
       )}
 
       <View style={[styles.grid, { gap }]}>
-        <Card style={{ width: chartCardWidth }}>
-          <SectionHeader title="Spending by category" />
-          {s ? (
-            s.byCategory.length ? (
-              <CategoryDonut data={s.byCategory} horizontal={!isWide && chartWidth > 420} />
-            ) : (
-              <EmptyState title="No spending yet" icon="pie-chart-outline" />
-            )
-          ) : (
+        <Card style={{ width: half }}>
+          <SectionHeader title="Spending by category" subtitle={formatMonth(month)} />
+          {!s ? (
             <Loading />
+          ) : s.byCategory.length === 0 ? (
+            <EmptyState compact icon="pie-chart-outline" title="No spending yet" message="Upload a statement to see where your money goes." />
+          ) : (
+            <CategoryDonut data={s.byCategory} horizontal={!isWide && chartWidth > 420} />
           )}
         </Card>
-        <Card style={{ width: chartCardWidth }}>
-          <SectionHeader title="Weekly spending" />
-          <Text style={styles.caption}>Last 3 months, excluding rent</Text>
-          {weekly.data ? <WeeklySpendChart data={weekly.data} width={chartWidth} /> : <Loading />}
+        <Card style={{ width: half }}>
+          <SectionHeader title="Weekly spending" subtitle="Last 3 months, excluding rent" />
+          {!weekly.data ? (
+            <Loading />
+          ) : noWeeklySpend ? (
+            <EmptyState compact icon="analytics-outline" title="No spending yet" />
+          ) : (
+            <WeeklySpendChart
+              data={weekly.data}
+              width={chartWidth}
+              height={isWide ? layout.chartHeightWide : layout.chartHeight}
+            />
+          )}
         </Card>
       </View>
 
-      <View style={[styles.grid, { gap }]}>
-        <Card style={{ width: chartCardWidth }}>
-          <SectionHeader title="Budgets" />
-          {budgets.data ? (
-            topBudgets.map((b) => (
-              <View key={b.category} style={styles.budget}>
-                <View style={styles.budgetRow}>
-                  <Text style={styles.budgetName}>{b.category}</Text>
-                  <Text style={styles.budgetAmount}>
-                    {formatMoney(b.spent)} <Text style={styles.muted}>of {formatMoney(b.monthlyLimit)}</Text>
-                  </Text>
-                </View>
-                <ProgressBar value={b.ratio} />
-                <Text style={styles.caption}>
-                  {Math.round(b.ratio * 100)}% used ·{' '}
-                  {b.remaining >= 0 ? `${formatMoney(b.remaining)} left` : `${formatMoney(-b.remaining)} over`}
-                </Text>
-              </View>
-            ))
-          ) : (
+      <View style={[styles.grid, styles.gridTop, { gap }]}>
+        <Card style={{ width: half }}>
+          <SectionHeader title="Budgets" actionLabel="See all" onAction={() => router.push('/more')} />
+          {!budgets.data ? (
             <Loading />
+          ) : topBudgets.length === 0 ? (
+            <EmptyState
+              compact
+              icon="pie-chart-outline"
+              title="No budgets yet"
+              actionLabel="Set up budgets"
+              onAction={() => router.push('/more')}
+            />
+          ) : (
+            topBudgets.map((b, i) => (
+              <Fragment key={b.category}>
+                {i > 0 && <Divider />}
+                <BudgetRow budget={b} />
+              </Fragment>
+            ))
           )}
         </Card>
 
-        <Card style={[{ width: chartCardWidth }, styles.tipCard]}>
+        <Card style={[{ width: half }, styles.tipCard]}>
           <SectionHeader title="Card optimizer" />
           {!optimizer.data || !cards.data ? (
             <Loading />
@@ -195,17 +190,15 @@ export default function Home() {
                 {periodLabel}.
               </Text>
               <Text style={styles.caption}>
-                {Math.round(
-                  ((tip.spent - (tip.spendByCard.find((c) => c.cardId === tipCard.id)?.amount ?? 0)) / tip.spent) * 100,
-                )}
-                % of your {tip.category.toLowerCase()} spending {periodLabel} went on a card that earns less.
+                {tipShareElsewhere}% of your {tip.category.toLowerCase()} spending {periodLabel} went on a card that earns
+                less.
               </Text>
               <Button
                 label="See all card tips"
                 variant="secondary"
                 size="sm"
                 icon="card-outline"
-                style={styles.tipButton}
+                style={styles.start}
                 onPress={() => router.push('/cards')}
               />
             </>
@@ -221,17 +214,15 @@ export default function Home() {
 const styles = StyleSheet.create({
   header: { gap: spacing.md },
   headerWide: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  headerText: { gap: spacing.xxs },
-  greeting: { fontSize: fontSize.xxl, fontWeight: fontWeight.bold, color: colors.text },
-  subtitle: { fontSize: fontSize.sm, color: colors.muted },
+  headerText: { gap: spacing.xxs, flexShrink: 1 },
+  greeting: typography.title,
+  subtitle: typography.muted,
+  // Default stretch: cards side by side get equal heights (the two charts).
   grid: { flexDirection: 'row', flexWrap: 'wrap' },
-  caption: { fontSize: fontSize.xs, color: colors.muted },
-  muted: { color: colors.muted, fontWeight: fontWeight.regular },
-  budget: { gap: spacing.xs + spacing.xxs },
-  budgetRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
-  budgetName: { fontSize: fontSize.sm, fontWeight: fontWeight.semibold, color: colors.text },
-  budgetAmount: { fontSize: fontSize.sm, fontWeight: fontWeight.semibold, color: colors.text },
+  // Natural heights: the short tip card shouldn't stretch to the budgets list.
+  gridTop: { alignItems: 'flex-start' },
+  caption: typography.caption,
   tipCard: { backgroundColor: colors.primarySoft, borderColor: colors.primarySoft },
-  tipHeadline: { fontSize: fontSize.md, fontWeight: fontWeight.semibold, color: colors.text, lineHeight: fontSize.md * 1.4 },
-  tipButton: { alignSelf: 'flex-start' },
+  tipHeadline: { ...typography.subheading, lineHeight: lineHeight.md },
+  start: { alignSelf: 'flex-start' },
 });

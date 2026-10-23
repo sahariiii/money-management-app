@@ -8,19 +8,24 @@ type Props = {
   children: ReactNode;
   /** Set false for screens that manage their own scrolling (e.g. chat lists). */
   scroll?: boolean;
-  /** Safe-area edges to pad. Tab screens with a header usually only need none. */
+  /** Safe-area edges to pad. Screens under a header usually need none. */
   edges?: Edge[];
+  /** 'narrow' caps the column for forms, detail pages and chat on wide screens. */
+  width?: 'default' | 'narrow';
   contentStyle?: ViewStyle;
 };
 
 /** Full-screen background with a centered, max-width content column. */
-export function Screen({ children, scroll = true, edges = [], contentStyle }: Props) {
-  const inner = <View style={[styles.content, contentStyle]}>{children}</View>;
+export function Screen({ children, scroll = true, edges = [], width = 'default', contentStyle }: Props) {
+  const maxWidth = width === 'narrow' ? layout.narrowContentWidth : layout.maxContentWidth;
+  const inner = <View style={[styles.content, { maxWidth }, contentStyle]}>{children}</View>;
 
   return (
     <SafeAreaView style={styles.root} edges={edges}>
       {scroll ? (
-        <ScrollView contentContainerStyle={styles.scrollContent}>{inner}</ScrollView>
+        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+          {inner}
+        </ScrollView>
       ) : (
         <View style={styles.fill}>{inner}</View>
       )}
@@ -35,7 +40,6 @@ const styles = StyleSheet.create({
   content: {
     flexGrow: 1,
     width: '100%',
-    maxWidth: layout.maxContentWidth,
     alignSelf: 'center',
     padding: spacing.lg,
     gap: spacing.lg,

@@ -3,12 +3,23 @@ import { useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { AlertBanner, Button, Card, Chip, EmptyState, Loading, Screen, SectionHeader } from '@/components';
-import { colors, fontFamily, fontSize, fontWeight, layout, radius, spacing } from '@/constants/theme';
+import {
+  AlertBanner,
+  Button,
+  Card,
+  CategoryBadge,
+  Chip,
+  DetailRow,
+  Divider,
+  EmptyState,
+  Loading,
+  Screen,
+  SectionHeader,
+} from '@/components';
+import { colors, fontFamily, fontSize, fontWeight, radius, spacing, typography } from '@/constants/theme';
 import { useAsync } from '@/hooks/use-async';
 import { getCards, getTransaction, updateCategory } from '@/lib/api';
-import { categoryColor, categoryIcon } from '@/lib/categories';
-import { formatLongDate } from '@/lib/dates';
+import { formatShortDate } from '@/lib/dates';
 import { formatMoney, maskCard } from '@/lib/format';
 import { CATEGORIES, type Category } from '@/types';
 
@@ -23,7 +34,7 @@ export default function TransactionDetail() {
 
   if (tx.loading && !tx.data) {
     return (
-      <Screen edges={['bottom']}>
+      <Screen edges={['bottom']} width="narrow">
         <Loading />
       </Screen>
     );
@@ -32,13 +43,14 @@ export default function TransactionDetail() {
   const t = tx.data;
   if (!t) {
     return (
-      <Screen edges={['bottom']}>
+      <Screen edges={['bottom']} width="narrow">
         <EmptyState icon="help-circle-outline" title="Transaction not found" message={`No transaction with id ${id}.`} />
       </Screen>
     );
   }
 
   const card = cards.data?.find((c) => c.id === t.cardId);
+  const cardLabel = card ? `${card.nickname} ${maskCard(card.last4)}` : cards.data ? 'Unknown card' : '…';
   const options = t.isIncome ? CATEGORIES : CATEGORIES.filter((c) => c !== 'Income');
 
   const pick = (c: Category) => {
@@ -64,43 +76,40 @@ export default function TransactionDetail() {
   };
 
   return (
-    <Screen edges={['bottom']}>
+    <Screen edges={['bottom']} width="narrow">
       <View style={styles.hero}>
-        <View style={[styles.heroIcon, { borderColor: categoryColor(t.category) }]}>
-          <Ionicons name={categoryIcon(t.category)} size={layout.iconSize + 6} color={categoryColor(t.category)} />
-        </View>
+        <CategoryBadge category={t.category} size="lg" />
         <Text style={styles.merchant}>{t.merchant}</Text>
         <Text style={[styles.amount, { color: t.isIncome ? colors.income : colors.expense }]}>
           {t.isIncome ? '+' : '−'}
           {formatMoney(t.amount, t.currency)}
         </Text>
-        <Text style={styles.muted}>{formatLongDate(t.date)}</Text>
+        <Text style={styles.muted}>{formatShortDate(t.date)}</Text>
       </View>
 
       <Card>
         <SectionHeader title="Details" />
         <View style={styles.cleanup}>
-          <Text style={styles.label}>From your bank</Text>
+          <Text style={styles.muted}>From your bank</Text>
           <Text style={styles.raw} selectable>
             {t.rawDescription}
           </Text>
           <View style={styles.cleanupArrow}>
             <Ionicons name="arrow-down" size={fontSize.md} color={colors.muted} />
-            <Text style={styles.muted}>cleaned up</Text>
+            <Text style={styles.caption}>cleaned up</Text>
           </View>
-          <Text style={styles.label}>Merchant</Text>
+          <Text style={styles.muted}>Merchant</Text>
           <Text style={styles.cleaned}>{t.merchant}</Text>
         </View>
-        <View style={styles.divider} />
+        <Divider />
         <DetailRow label="Amount" value={`${formatMoney(t.amount, t.currency)} ${t.currency}`} />
-        <DetailRow label="Card" value={card ? `${card.nickname} ${maskCard(card.last4)}` : '—'} />
-        <DetailRow label="Date" value={formatLongDate(t.date)} />
+        <DetailRow label="Card" value={cardLabel} />
+        <DetailRow label="Date" value={formatShortDate(t.date)} />
         <DetailRow label="Category" value={t.category} />
       </Card>
 
       <Card>
-        <SectionHeader title="Category" />
-        <Text style={styles.muted}>Wrong category? Pick the right one.</Text>
+        <SectionHeader title="Category" subtitle="Wrong category? Pick the right one." />
         <View style={styles.chips}>
           {options.map((c) => (
             <Chip key={c} label={c} selected={(pending ?? t.category) === c} onPress={() => pick(c)} />
@@ -126,30 +135,12 @@ export default function TransactionDetail() {
   );
 }
 
-function DetailRow({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.row}>
-      <Text style={styles.label}>{label}</Text>
-      <Text style={styles.value}>{value}</Text>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   hero: { alignItems: 'center', gap: spacing.xs, paddingVertical: spacing.md },
-  heroIcon: {
-    width: layout.avatarSize + spacing.lg,
-    height: layout.avatarSize + spacing.lg,
-    borderRadius: radius.lg,
-    borderWidth: 2,
-    backgroundColor: colors.card,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: spacing.sm,
-  },
-  merchant: { fontSize: fontSize.lg, fontWeight: fontWeight.semibold, color: colors.text },
-  amount: { fontSize: fontSize.display, fontWeight: fontWeight.bold },
-  muted: { fontSize: fontSize.sm, color: colors.muted },
+  merchant: { ...typography.heading, marginTop: spacing.sm, textAlign: 'center' },
+  amount: typography.amount,
+  muted: typography.muted,
+  caption: typography.caption,
   cleanup: { gap: spacing.xs },
   cleanupArrow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingVertical: spacing.xs },
   raw: {
@@ -160,20 +151,12 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
     padding: spacing.sm,
     alignSelf: 'flex-start',
+    maxWidth: '100%',
   },
-  cleaned: { fontSize: fontSize.md, fontWeight: fontWeight.semibold, color: colors.text },
-  divider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border },
-  row: { flexDirection: 'row', justifyContent: 'space-between', gap: spacing.lg },
-  label: { fontSize: fontSize.sm, color: colors.muted },
-  value: { flexShrink: 1, textAlign: 'right', fontSize: fontSize.sm, fontWeight: fontWeight.semibold, color: colors.text },
+  cleaned: typography.subheading,
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  confirm: {
-    gap: spacing.md,
-    padding: spacing.md,
-    borderRadius: radius.md,
-    backgroundColor: colors.primarySoft,
-  },
-  confirmText: { fontSize: fontSize.md, color: colors.text },
+  confirm: { gap: spacing.md, padding: spacing.md, borderRadius: radius.md, backgroundColor: colors.primarySoft },
+  confirmText: typography.body,
   bold: { fontWeight: fontWeight.bold },
   confirmActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
 });

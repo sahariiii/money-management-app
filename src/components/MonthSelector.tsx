@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { colors, fontSize, fontWeight, layout, radius, spacing } from '@/constants/theme';
+import { borderWidth, colors, layout, radius, spacing, typography } from '@/constants/theme';
 import { formatMonth } from '@/lib/dates';
 import type { YearMonth } from '@/types';
 
@@ -23,8 +23,9 @@ export function MonthSelector({ months, value, onChange }: Props) {
       hitSlop={spacing.sm}
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityState={{ disabled: !target }}
       style={({ pressed }) => [styles.arrow, pressed && styles.pressed]}>
-      <Ionicons name={icon} size={layout.iconSize - 4} color={target ? colors.text : colors.border} />
+      <Ionicons name={icon} size={layout.iconSize - spacing.xs} color={target ? colors.text : colors.border} />
     </Pressable>
   );
 
@@ -44,7 +45,7 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     gap: spacing.xs,
     backgroundColor: colors.card,
-    borderWidth: 1,
+    borderWidth: borderWidth.thin,
     borderColor: colors.border,
     borderRadius: radius.pill,
     paddingHorizontal: spacing.xs,
@@ -52,11 +53,5 @@ const styles = StyleSheet.create({
   },
   arrow: { padding: spacing.xs + spacing.xxs },
   pressed: { opacity: 0.5 },
-  label: {
-    minWidth: 120,
-    textAlign: 'center',
-    fontSize: fontSize.sm,
-    fontWeight: fontWeight.semibold,
-    color: colors.text,
-  },
+  label: { ...typography.label, minWidth: layout.monthLabelWidth, textAlign: 'center' },
 });
