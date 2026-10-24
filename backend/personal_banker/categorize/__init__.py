@@ -1,6 +1,6 @@
 """Budget categorization: transcribed statement Markdown -> expense / income rows for the budget workbook."""
 
-from .agent import CategorizationResult, budget_record, categorize_statement
+from .agent import CategorizationResult, account_record, budget_record, categorize_statement, identify_account
 from .export import to_xlsx
 from .workbook import BudgetSetup, RulesError, load_budget_setup
 
@@ -11,8 +11,10 @@ __all__ = [
     "BudgetSetup",
     "CategorizationResult",
     "RulesError",
+    "account_record",
     "budget_record",
     "categorize_statement",
+    "identify_account",
     "load_budget_setup",
     "to_xlsx",
 ]

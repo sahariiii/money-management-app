@@ -10,6 +10,7 @@
 
 import { getClerkInstance } from '@clerk/expo';
 import Constants from 'expo-constants';
+import { File as DeviceFile } from 'expo-file-system';
 import { Platform } from 'react-native';
 
 import {
@@ -39,9 +40,11 @@ import type {
   MerchantSpend,
   MonthTotals,
   NewCardInput,
+  NewExpenseInput,
   OptimizerCategory,
   PickedFile,
   RangePreset,
+  Receipt,
   ReceiptScan,
   RecurringBill,
   RecurringBillStatus,
@@ -119,7 +122,8 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
     const message = typeof detail === 'string' ? detail : (detail?.message ?? `${init.method ?? 'GET'} ${path} failed with ${res.status}`);
     throw new ApiError(res.status, message, detail?.code);
   }
-  return (await res.json()) as T;
+  // 204 No Content (e.g. a delete) has no body to parse.
+  return (res.status === 204 ? undefined : await res.json()) as T;
 }
 
 /** Like apiFetch, but null when the backend says 404. */
@@ -231,32 +235,69 @@ const daysIn = ({ from, to }: DateRange) => daysFrom(from, to) + 1;
 // ---------------------------------------------------------------------------
 // Cards & transactions
 
-/** With the backend: its cards, plus any added this session (it can't store cards yet). */
+/** The user's cards. The backend lists a placeholder card until one is added. */
 export async function getCards(): Promise<Card[]> {
-  if (!USE_MOCK) return [...(await apiFetch<Card[]>('/api/cards')), ...clone(db.cards)];
+  if (!USE_MOCK) return apiFetch<Card[]>('/api/cards');
   await delay();
   return clone(db.cards);
 }
 
+export async function getCard(id: string): Promise<Card | null> {
+  return (await getCards()).find((c) => c.id === id) ?? null;
+}
+
 export async function getRewardRules(cardId?: string): Promise<RewardRule[]> {
-  await delay(150);
-  return clone(cardId ? db.rewardRules.filter((r) => r.cardId === cardId) : db.rewardRules);
+  let rules: RewardRule[];
+  if (USE_MOCK) {
+    await delay(150);
+    rules = clone(db.rewardRules);
+  } else {
+    rules = await apiFetch<RewardRule[]>('/api/reward-rules');
+  }
+  return cardId ? rules.filter((r) => r.cardId === cardId) : rules;
+}
+
+/** Only ever keep the last 4 digits of card and account numbers, whatever the caller passes. */
+function cleanCardInput(input: NewCardInput): NewCardInput {
+  const last4 = (digits: string) => digits.replace(/\D/g, '').slice(-4);
+  return { ...input, last4: last4(input.last4), accountLast4: last4(input.accountLast4 ?? '') || undefined };
+}
+
+/** Saves a card and its reward rules in the mock db under `id`, replacing what it had. */
+function storeMockCard(id: string, input: NewCardInput): Card {
+  const { rules, ...fields } = input;
+  const card: Card = { ...fields, id };
+  const i = db.cards.findIndex((c) => c.id === id);
+  if (i >= 0) db.cards[i] = card;
+  else db.cards.push(card);
+  db.rewardRules = [...db.rewardRules.filter((r) => r.cardId !== id), ...rules.map((r) => ({ ...r, cardId: id }))];
+  return clone(card);
 }
 
 export async function addCard(input: NewCardInput): Promise<Card> {
+  const clean = cleanCardInput(input);
+  if (!USE_MOCK) return apiFetch<Card>('/api/cards', { method: 'POST', body: JSON.stringify(clean) });
   await delay(500);
-  const { rules, ...fields } = input;
-  // Only ever keep the last 4 digits, whatever the caller passes.
-  const last4 = (digits: string) => digits.replace(/\D/g, '').slice(-4);
-  const card: Card = {
-    ...fields,
-    id: `card_${Date.now()}`,
-    last4: last4(fields.last4),
-    accountLast4: last4(fields.accountLast4 ?? '') || undefined,
-  };
-  db.cards.push(card);
-  db.rewardRules.push(...rules.map((r) => ({ ...r, cardId: card.id })));
-  return clone(card);
+  return storeMockCard(`card_${Date.now()}`, clean);
+}
+
+/** Replaces a card's details and all of its reward rules. */
+export async function updateCard(id: string, input: NewCardInput): Promise<Card> {
+  const clean = cleanCardInput(input);
+  if (!USE_MOCK) {
+    return apiFetch<Card>(`/api/cards/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(clean) });
+  }
+  await delay(500);
+  if (!db.cards.some((c) => c.id === id)) throw new ApiError(404, 'Card not found.');
+  return storeMockCard(id, clean);
+}
+
+/** Deletes a card and its reward rules. Its past transactions stay, without a card. */
+export async function deleteCard(id: string): Promise<void> {
+  if (!USE_MOCK) return apiFetch<void>(`/api/cards/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  await delay(400);
+  db.cards = db.cards.filter((c) => c.id !== id);
+  db.rewardRules = db.rewardRules.filter((r) => r.cardId !== id);
 }
 
 export async function getTransactions(filters: TransactionFilters = {}): Promise<Transaction[]> {
@@ -485,9 +526,9 @@ export async function dismissAlert(id: string): Promise<Alert | null> {
 /** Categories that can't realistically go on a credit card. */
 const NOT_CARD_PAYABLE: Category[] = ['Housing', 'Income'];
 
-function ruleFor(cardId: string, category: Category) {
-  const rules = db.rewardRules.filter((r) => r.cardId === cardId);
-  return rules.find((r) => r.category === category) ?? rules.find((r) => r.category === '*');
+function ruleFor(rules: RewardRule[], cardId: string, category: Category) {
+  const own = rules.filter((r) => r.cardId === cardId);
+  return own.find((r) => r.category === category) ?? own.find((r) => r.category === '*');
 }
 
 /**
@@ -496,12 +537,13 @@ function ruleFor(cardId: string, category: Category) {
  * and is only updated when `commit` is true.
  */
 function rewardFor(
+  rules: RewardRule[],
   cardId: string,
   t: Transaction,
   usage: Map<string, number>,
   commit: boolean,
 ): number {
-  const rule = ruleFor(cardId, t.category);
+  const rule = ruleFor(rules, cardId, t.category);
   if (!rule) return 0;
   let eligible = t.amount;
   if (rule.cap !== null) {
@@ -510,12 +552,12 @@ function rewardFor(
     eligible = Math.max(0, Math.min(t.amount, rule.cap - used));
     if (commit) usage.set(key, used + t.amount);
   }
-  const base = db.rewardRules.find((r) => r.cardId === cardId && r.category === '*');
+  const base = rules.find((r) => r.cardId === cardId && r.category === '*');
   const fallbackRate = base && base !== rule ? base.ratePercent : 0;
   return (eligible * rule.ratePercent + (t.amount - eligible) * fallbackRate) / 100;
 }
 
-function optimize(all: Transaction[], cards: Card[], range: DateRange): CardOptimizer {
+function optimize(all: Transaction[], cards: Card[], rules: RewardRule[], range: DateRange): CardOptimizer {
   const txs = expenses(all.filter((t) => inRange(t, range)))
     .filter((t) => !NOT_CARD_PAYABLE.includes(t.category))
     .sort((a, b) => a.date.localeCompare(b.date));
@@ -529,19 +571,19 @@ function optimize(all: Transaction[], cards: Card[], range: DateRange): CardOpti
   const potentialByCard = new Map<string, number>();
 
   for (const t of txs) {
-    const earned = rewardFor(t.cardId, t, actualUsage, true);
+    const earned = rewardFor(rules, t.cardId, t, actualUsage, true);
 
     // Best case: the card that would have paid the most for this purchase.
     let bestCard = t.cardId;
     let bestReward = -1;
     for (const card of cards) {
-      const r = rewardFor(card.id, t, bestUsage, false);
+      const r = rewardFor(rules, card.id, t, bestUsage, false);
       if (r > bestReward) {
         bestReward = r;
         bestCard = card.id;
       }
     }
-    rewardFor(bestCard, t, bestUsage, true);
+    rewardFor(rules, bestCard, t, bestUsage, true);
     potentialByCard.set(bestCard, (potentialByCard.get(bestCard) ?? 0) + bestReward);
 
     const acc = cats.get(t.category) ?? { spent: 0, earned: 0, potential: 0, byCard: new Map(), bestByCard: new Map() };
@@ -613,8 +655,8 @@ function optimize(all: Transaction[], cards: Card[], range: DateRange): CardOpti
 }
 
 export async function getCardOptimizer(period: RangePreset | DateRange = 'last-3-months'): Promise<CardOptimizer> {
-  const [txs, cards] = await Promise.all([allTransactions(), getCards()]);
-  return optimize(txs, cards, resolveRange(period));
+  const [txs, cards, rules] = await Promise.all([allTransactions(), getCards(), getRewardRules()]);
+  return optimize(txs, cards, rules, resolveRange(period));
 }
 
 // ---------------------------------------------------------------------------
@@ -697,13 +739,13 @@ function restaurantsAnswer(all: Transaction[]): Answer {
 }
 
 function cardAnswer(question: string, all: Transaction[], cards: Card[]): Answer {
-  const opt = optimize(all, cards, resolveRange('this-month'));
+  const opt = optimize(all, cards, db.rewardRules, resolveRange('this-month'));
   const asked = opt.byCategory.find((c) => question.includes(c.category.toLowerCase()));
   const pick = asked ?? opt.byCategory[0];
   if (!pick) return { text: "You haven't spent anything on cards this month yet." };
 
   const best = cards.find((c) => c.id === pick.bestCardId);
-  const rate = best ? ruleFor(best.id, pick.category)?.ratePercent ?? 0 : 0;
+  const rate = best ? ruleFor(db.rewardRules, best.id, pick.category)?.ratePercent ?? 0 : 0;
   const name = best ? `${best.nickname} (•••• ${best.last4})` : 'your best card';
   const category = pick.category.toLowerCase();
 
@@ -750,7 +792,20 @@ export async function sendChatMessage(text: string): Promise<ChatMessage> {
 // ---------------------------------------------------------------------------
 // Statements and receipts
 
-const NEEDS_BACKEND = 'Statements need the backend: set EXPO_PUBLIC_API_URL in .env.';
+const NEEDS_BACKEND = 'This needs the backend: set EXPO_PUBLIC_API_URL in .env.';
+/** Adds a picked file to an upload. */
+async function appendFile(form: FormData, field: string, file: PickedFile) {
+  if (Platform.OS === 'web') {
+    // On web the picker's uri is a blob: or data: URL for the chosen file.
+    form.append(field, await (await fetch(file.uri)).blob(), file.name);
+  } else {
+    // Expo's fetch, which replaces React Native's, can't send React Native's { uri, name, type }
+    // parts ("Unsupported FormDataPart implementation"); it sends an expo-file-system File.
+    // That part is named after the file on the device, so callers send the real name separately.
+    form.append(field, new DeviceFile(file.uri) as unknown as Blob);
+  }
+}
+
 /** How long uploadStatement waits for the backend to read a statement, and how often it checks. */
 const UPLOAD_TIMEOUT_MS = 20 * 60_000;
 const POLL_MS = 2000;
@@ -780,13 +835,8 @@ export async function uploadStatement(file: PickedFile, password?: string): Prom
   if (USE_MOCK) return mockUploadStatement(file);
 
   const form = new FormData();
-  if (Platform.OS === 'web') {
-    // On web the picker's uri is a blob: or data: URL for the chosen file.
-    form.append('file', await (await fetch(file.uri)).blob(), file.name);
-  } else {
-    // React Native's fetch uploads a { uri, name, type } part from the file on the device.
-    form.append('file', { uri: file.uri, name: file.name, type: file.mimeType ?? 'application/pdf' } as unknown as Blob);
-  }
+  await appendFile(form, 'file', file);
+  form.append('filename', file.name);
   if (password) form.append('password', password);
 
   let statement = await apiFetch<Statement>('/api/statements', { method: 'POST', body: form });
@@ -838,9 +888,24 @@ async function mockUploadStatement(file: PickedFile): Promise<StatementUpload> {
 
 const HST = 0.13;
 
+/**
+ * Reads a receipt photo (the backend sends it to Claude and doesn't keep it) and finds
+ * the expense it is for, if that's in the ledger already.
+ */
 export async function scanReceipt(image: PickedFile): Promise<ReceiptScan> {
-  void image;
-  if (!USE_MOCK) throw new Error("Receipt scanning isn't connected to the backend yet.");
+  if (!USE_MOCK) {
+    const form = new FormData();
+    await appendFile(form, 'image', image);
+    try {
+      return await apiFetch<ReceiptScan>('/api/receipts/scan', { method: 'POST', body: form });
+    } catch (e) {
+      // A backend started before receipt scanning existed doesn't have the route.
+      if (e instanceof ApiError && e.status === 404) {
+        throw new ApiError(404, "The server doesn't support receipt scanning yet. Restart the backend and try again.");
+      }
+      throw e;
+    }
+  }
   await delay(2000);
   // Pretend every photo is the Gusto 101 dinner receipt, which is already in the ledger.
   const match = db.transactions.find((t) => t.merchant === 'Gusto 101') ?? null;
@@ -854,6 +919,55 @@ export async function scanReceipt(image: PickedFile): Promise<ReceiptScan> {
     taxLabel: 'HST 13%',
     total,
     currency: 'CAD',
+    items: [{ description: 'Dinner', amount: subtotal }],
+    category: 'Food',
+    cardLast4: null,
+    cardId: match?.cardId ?? null,
     matchedTransaction: match ? clone(match) : null,
+    receiptId: null, // the mock doesn't keep photos
   };
+}
+
+/** A saved receipt (what was read, and the photo); null when there's none. Mock mode keeps no receipts. */
+export async function getReceipt(id: string): Promise<Receipt | null> {
+  if (USE_MOCK) return null;
+  return apiFetchOrNull<Receipt>(`/api/receipts/${encodeURIComponent(id)}`);
+}
+
+/** Saves a scanned receipt with a transaction (e.g. the one it matched), replacing a receipt it had. */
+export async function attachReceipt(receiptId: string, transactionId: string): Promise<Transaction> {
+  if (USE_MOCK) throw new Error(NEEDS_BACKEND);
+  return apiFetch<Transaction>(`/api/receipts/${encodeURIComponent(receiptId)}/attach`, {
+    method: 'POST',
+    body: JSON.stringify({ transactionId }),
+  });
+}
+
+/** Removes a receipt and its photo; the transaction stays. */
+export async function deleteReceipt(id: string): Promise<void> {
+  if (USE_MOCK) throw new Error(NEEDS_BACKEND);
+  return apiFetch<void>(`/api/receipts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** Adds an expense from a receipt. The backend hides it again once a statement brings the same purchase. */
+export async function addExpense(input: NewExpenseInput): Promise<Transaction> {
+  if (!USE_MOCK) return apiFetch<Transaction>('/api/transactions', { method: 'POST', body: JSON.stringify(input) });
+  await delay(400);
+  const tx: Transaction = {
+    ...input,
+    id: `receipt_${Date.now().toString(16)}`,
+    amount: round2(input.amount),
+    rawDescription: `Receipt from ${input.merchant}`,
+    isIncome: false,
+    source: 'receipt',
+  };
+  db.transactions.push(tx);
+  return clone(tx);
+}
+
+/** Deletes an expense added from a receipt (statement transactions can't be deleted). */
+export async function deleteTransaction(id: string): Promise<void> {
+  if (!USE_MOCK) return apiFetch<void>(`/api/transactions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  await delay(300);
+  db.transactions = db.transactions.filter((t) => t.id !== id || t.source !== 'receipt');
 }

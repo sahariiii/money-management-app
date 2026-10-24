@@ -43,7 +43,8 @@ export default function UploadStatement() {
     try {
       const res = await DocumentPicker.getDocumentAsync({
         type: ['text/csv', 'text/comma-separated-values', 'application/pdf'],
-        copyToCacheDirectory: false,
+        // A copy in the app's cache is a plain file the upload can read (Android otherwise gives a content:// uri).
+        copyToCacheDirectory: true,
       });
       if (res.canceled) return;
       const a = res.assets[0];

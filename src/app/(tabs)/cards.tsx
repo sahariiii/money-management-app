@@ -74,8 +74,24 @@ export default function Cards() {
               <View key={c.id} style={[styles.cardColumn, { width: half }]}>
                 <PaymentCard card={c} />
                 <Card>
-                  <Text style={styles.overline}>Rewards</Text>
-                  {cardRules.length === 0 ? (
+                  <View style={styles.rewardsHeader}>
+                    <Text style={styles.overline}>Rewards</Text>
+                    {!c.isPlaceholder && (
+                      <Button
+                        label="Edit"
+                        icon="create-outline"
+                        variant="ghost"
+                        size="sm"
+                        onPress={() => router.push(`/edit-card/${c.id}`)}
+                      />
+                    )}
+                  </View>
+                  {c.isPlaceholder ? (
+                    <Text style={styles.muted}>
+                      Transactions from statements whose account number matches none of your cards. Add that
+                      account number to the right card and they move to it.
+                    </Text>
+                  ) : cardRules.length === 0 ? (
                     <Text style={styles.muted}>No rewards on this card.</Text>
                   ) : (
                     cardRules.map((r) => {
@@ -204,6 +220,7 @@ const styles = StyleSheet.create({
   grid: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start' },
   cardColumn: { gap: spacing.md },
   overline: typography.overline,
+  rewardsHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
   ruleRow: { flexDirection: 'row', alignItems: 'baseline', gap: spacing.md },
   ruleRate: { ...typography.heading, color: colors.primary, minWidth: spacing.xxxl },
   ruleWhat: { ...typography.small, flex: 1 },

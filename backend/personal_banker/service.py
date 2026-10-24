@@ -9,15 +9,25 @@ from collections.abc import Callable
 from concurrent.futures import as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 import anthropic
 import braintrust
 from braintrust import TracedThreadPoolExecutor
 
-from .categorize import DEFAULT_WORKBOOK, BudgetSetup, RulesError, budget_record, categorize_statement, load_budget_setup
+from . import ledger
+from .categorize import (
+    DEFAULT_WORKBOOK,
+    BudgetSetup,
+    RulesError,
+    account_record,
+    budget_record,
+    categorize_statement,
+    identify_account,
+    load_budget_setup,
+)
 from .docai import paddle
-from .docai.pipeline import Engine, engine_concurrency, extract_page
+from .docai.pipeline import EXTRACTION_ENGINE, Engine, engine_concurrency, extract_page
 from .llm import ExtractionError
 from .store import Library, StoredDocument
 
@@ -114,6 +124,24 @@ def categorize_document(
     return library.save_budget(
         doc, budget_record(categorize_statement(client, library.markdown(doc, engine), setup), workbook_name)
     )
+
+
+def needs_account(library: Library, doc: StoredDocument) -> bool:
+    """Categorized before budget.json recorded which account the statement is for."""
+    return (budget := library.budget(doc)) is not None and "account" not in budget
+
+
+def identify_statement_account(library: Library, doc: StoredDocument, client: anthropic.Anthropic) -> bool:
+    """Fills in which account a categorized statement is for, from its saved transcription (no re-categorizing).
+
+    False when there is no complete transcription to read it from.
+    """
+    engines = [EXTRACTION_ENGINE, *(e for e in get_args(Engine) if e != EXTRACTION_ENGINE)]
+    markdown = next((md for e in engines if (md := library.markdown(doc, e)) is not None), None)
+    if markdown is None:
+        return False
+    ledger.set_statement_account(library, doc, account_record(identify_account(client, markdown).output))
+    return True
 
 
 def process_document(

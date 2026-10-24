@@ -12,23 +12,26 @@ don't process statements in both at the same time, as PaddleOCR-VL needs the
 whole GPU. Response models mirror src/types.ts.
 """
 
+import base64
 import hashlib
 import logging
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Annotated, Literal
 
+import anthropic
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from . import auth, ledger
+from . import auth, ledger, receipts, service
 from .docai import render_pdf
 from .docai.pipeline import EXTRACTION_ENGINE
-from .ledger import AppCategory, AppModel, Card, CategoryUpdate, Transaction
-from .llm import make_client, start_trace
+from .ledger import AppCategory, AppModel, Card, CardInput, CategoryUpdate, RewardRule, Transaction
+from .llm import ExtractionError, make_client, start_trace
 from .pipeline import MAX_BYTES, PasswordRequired, StatementError, prepare_pdf
 from .service import engine_problem, has_api_key, process_document
 from .store import Library, StoredDocument
@@ -50,6 +53,9 @@ class Statement(AppModel):
     status: Literal["processing", "done", "incomplete"]
     message: str | None  # what is happening now, or why it stopped short
     transaction_count: int | None
+    account_last4: str | None  # the account number printed on it, last 4 digits
+    card_match: ledger.CardMatch | None  # None until categorized
+    card_id: str | None  # the card whose account number matches
 
 
 # One statement at a time: PaddleOCR-VL has one GPU, and Claude already reads pages in parallel.
@@ -69,6 +75,7 @@ def _statement(doc: StoredDocument) -> Statement:
         status, message = "done", None
     else:
         status, message = "incomplete", reason or "Not processed yet."
+    match, card_id = ledger.statement_match(library, budget) if budget is not None else (None, None)
     return Statement(
         id=doc.id,
         name=doc.name,
@@ -78,6 +85,9 @@ def _statement(doc: StoredDocument) -> Statement:
         status=status,
         message=message,
         transaction_count=len(budget["expenses"]) + len(budget["income"]) if budget else None,
+        account_last4=ledger.statement_account_last4(budget) if budget else None,
+        card_match=match,
+        card_id=card_id,
     )
 
 
@@ -129,6 +139,16 @@ def _process(doc_id: str) -> None:
             _stopped[doc_id] = reason
 
 
+def _identify_account(doc_id: str) -> None:
+    """Fills in the account of a statement categorized before budget.json recorded it, so it can match a card."""
+    doc = library.get(doc_id)
+    try:
+        if doc and service.needs_account(library, doc) and not service.identify_statement_account(library, doc, make_client()):
+            log.warning("No transcription to read the account of %s from.", doc_id)
+    except Exception:  # it stays "pending"; the next start tries again
+        log.exception("Reading the account of %s failed", doc_id)
+
+
 # ---------------------------------------------------------------------------
 # App
 
@@ -154,6 +174,13 @@ async def lifespan(_: FastAPI):
         )
     elif auth.publishable_key() and not os.environ.get(auth.ALLOWED_USERS_ENV):
         log.warning("%s isn't set: anyone who can sign in to the app can read your statements.", auth.ALLOWED_USERS_ENV)
+    if missing := [doc.id for doc in library.documents() if service.needs_account(library, doc)]:
+        if has_api_key():
+            log.info("Reading the account number of %d older statement(s) to match them to cards.", len(missing))
+            for doc_id in missing:
+                _jobs.submit(_identify_account, doc_id)
+        else:
+            log.warning("%d statement(s) can't be matched to cards until ANTHROPIC_API_KEY is set.", len(missing))
     yield
     _jobs.shutdown(wait=False, cancel_futures=True)
 
@@ -177,7 +204,31 @@ def health() -> dict:
 
 @api.get("/cards")
 def get_cards() -> list[Card]:
-    return [ledger.DUMMY_CARD]
+    return ledger.cards(library)
+
+
+@api.get("/reward-rules")
+def get_reward_rules() -> list[RewardRule]:
+    return ledger.reward_rules(library)
+
+
+@api.post("/cards", status_code=201)
+def add_card(data: CardInput) -> Card:
+    return ledger.add_card(library, data)
+
+
+@api.put("/cards/{card_id}")
+def update_card(card_id: str, data: CardInput) -> Card:
+    if (card := ledger.update_card(library, card_id, data)) is None:
+        raise HTTPException(404, "Card not found.")
+    return card
+
+
+@api.delete("/cards/{card_id}", status_code=204)
+def delete_card(card_id: str) -> Response:
+    if not ledger.delete_card(library, card_id):
+        raise HTTPException(404, "Card not found.")
+    return Response(status_code=204)
 
 
 @api.get("/transactions")
@@ -224,6 +275,141 @@ def update_category(tx_id: str, change: CategoryChange) -> CategoryUpdate:
     return update
 
 
+@api.post("/transactions", status_code=201)
+def add_expense(data: ledger.ExpenseInput) -> Transaction:
+    """An expense from a scanned receipt; hidden again once a statement brings the same purchase."""
+    try:
+        return ledger.add_receipt_expense(library, data)
+    except ledger.UnknownCard as e:
+        raise HTTPException(422, str(e)) from e
+
+
+@api.delete("/transactions/{tx_id}", status_code=204)
+def delete_expense(tx_id: str) -> Response:
+    """Only expenses added from receipts can be deleted; statements are the record of the rest."""
+    if ledger.is_receipt_id(tx_id) and ledger.delete_receipt_expense(library, tx_id):
+        return Response(status_code=204)
+    if ledger.transaction(library, tx_id) is not None:
+        raise HTTPException(409, "Transactions from statements can't be deleted.")
+    raise HTTPException(404, "Transaction not found.")
+
+
+# ---------------------------------------------------------------------------
+# Receipts
+
+
+class ReceiptItem(AppModel):
+    description: str
+    amount: float
+
+
+class ReceiptScan(AppModel):
+    merchant: str
+    date: str | None
+    subtotal: float | None
+    tax: float | None
+    tax_label: str | None
+    total: float
+    currency: str
+    items: list[ReceiptItem]
+    category: AppCategory  # suggested
+    card_last4: str | None  # the card number printed on it, last 4 digits
+    card_id: str | None  # the user's card with that number
+    matched_transaction: Transaction | None  # already in the ledger
+    receipt_id: str  # the saved scan; add it as an expense or attach it to the match to keep it
+
+
+class Receipt(AppModel):
+    """A saved scan: what was read from the receipt, and its photo."""
+
+    id: str
+    scanned_at: str
+    merchant: str
+    date: str | None
+    subtotal: float | None
+    tax: float | None
+    tax_label: str | None
+    total: float
+    currency: str
+    items: list[ReceiptItem]
+    card_last4: str | None
+    transaction_id: str | None
+    image_data_url: str | None  # the photo as a data: URL, so the app can show it without auth headers
+
+
+class ReceiptAttach(AppModel):
+    transaction_id: str
+
+
+@api.get("/receipts/{scan_id}")
+def get_receipt(scan_id: str) -> Receipt:
+    if not ledger.is_scan_id(scan_id) or (scan := library.scan(scan_id)) is None:
+        raise HTTPException(404, "Receipt not found.")
+    image = library.scan_image(scan_id)
+    data_url = f"data:image/jpeg;base64,{base64.b64encode(image).decode('ascii')}" if image else None
+    return Receipt(**scan, image_data_url=data_url)
+
+
+@api.post("/receipts/{scan_id}/attach")
+def attach_receipt(scan_id: str, body: ReceiptAttach) -> Transaction:
+    """Saves the receipt with a transaction (replacing one it had), e.g. the expense it matched."""
+    if (tx := ledger.attach_receipt(library, scan_id, body.transaction_id)) is None:
+        raise HTTPException(404, "Receipt or transaction not found.")
+    return tx
+
+
+@api.delete("/receipts/{scan_id}", status_code=204)
+def delete_receipt(scan_id: str) -> Response:
+    """Removes the receipt and its photo; the transaction stays."""
+    if not ledger.delete_receipt(library, scan_id):
+        raise HTTPException(404, "Receipt not found.")
+    return Response(status_code=204)
+
+
+@api.post("/receipts/scan")
+def scan_receipt(image: UploadFile) -> ReceiptScan:
+    """Reads a receipt photo, saves it, and finds the expense it is for if that's in the ledger already."""
+    if not has_api_key():
+        raise HTTPException(503, "Reading receipts uses Claude, and no Anthropic API key is set on the server.")
+    raw = image.file.read(receipts.MAX_UPLOAD_BYTES + 1)
+    if len(raw) > receipts.MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "That photo is too large. Try one under 20 MB.")
+    try:
+        photo = receipts.prepare_image(raw)
+    except receipts.ReceiptError as e:
+        raise HTTPException(415, str(e)) from e
+    with start_trace("receipt", input={"bytes": len(raw)}):
+        try:
+            data = receipts.read_receipt(make_client(), photo).output
+        except (ExtractionError, anthropic.APIError) as e:
+            raise HTTPException(502, f"Couldn't read the receipt: {e}") from e
+
+    try:
+        day = date.fromisoformat(data.date).isoformat() if data.date else None
+    except ValueError:
+        day = None
+    last4 = receipts.last4(data.card_last4)
+    card = ledger.card_by_number(library, last4)
+    read = {
+        "merchant": data.merchant,
+        "date": day,
+        "subtotal": data.subtotal,
+        "tax": data.tax,
+        "tax_label": data.tax_label,
+        "total": round(data.total, 2),
+        "currency": (data.currency or ledger.CURRENCY).upper()[:3],
+        "items": [{"description": i.description, "amount": i.amount} for i in data.items],
+        "card_last4": last4,
+    }
+    return ReceiptScan(
+        **read,
+        category="Other" if data.category == "Income" else data.category,
+        card_id=card.id if card else None,
+        matched_transaction=ledger.find_match(ledger.transactions(library), data.total, day, card.id if card else None),
+        receipt_id=ledger.save_scan(library, read, photo),
+    )
+
+
 def _document(doc_id: str) -> StoredDocument:
     if not ledger.is_document_id(doc_id) or (doc := library.get(doc_id)) is None:
         raise HTTPException(404, "Statement not found.")
@@ -237,12 +423,18 @@ def get_statements() -> list[Statement]:
 
 
 @api.post("/statements", status_code=202)
-def upload_statement(file: UploadFile, response: Response, password: Annotated[str | None, Form()] = None) -> Statement:
+def upload_statement(
+    file: UploadFile,
+    response: Response,
+    password: Annotated[str | None, Form()] = None,
+    filename: Annotated[str | None, Form()] = None,
+) -> Statement:
     """Add a PDF statement and start reading and categorizing it; poll GET /api/statements/{id}.
 
-    409 with code password_required when the PDF needs a password (or the one
-    sent was wrong). A statement that is already in the library comes back
-    with 200, and is processed again if it was left incomplete.
+    `filename` is the name the user picked, when the upload itself carries another
+    (the phone app uploads a cached copy). 409 with code password_required when the
+    PDF needs a password (or the one sent was wrong). A statement that is already in
+    the library comes back with 200, and is processed again if it was left incomplete.
     """
     raw = file.file.read(MAX_BYTES + 1)  # anything longer is refused by prepare_pdf
     doc = library.find(hashlib.sha256(raw).hexdigest())
@@ -255,7 +447,7 @@ def upload_statement(file: UploadFile, response: Response, password: Annotated[s
             raise HTTPException(409, {"code": "password_required", "message": str(e)}) from e
         except StatementError as e:
             raise HTTPException(422, {"code": "invalid_pdf", "message": str(e)}) from e
-        doc = library.add(file.filename or "statement.pdf", raw, render_pdf(pdf))
+        doc = library.add(filename or file.filename or "statement.pdf", raw, render_pdf(pdf))
     _queue(doc)
     return _statement(doc)
 

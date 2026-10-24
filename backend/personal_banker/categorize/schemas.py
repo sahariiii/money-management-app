@@ -32,13 +32,22 @@ class OtherLine(BaseModel):
     reason: str = Field(description="What the line is, e.g. 'closing balance' or 'subtotal'.")
 
 
-class ExtractedStatement(BaseModel):
+class StatementAccount(BaseModel):
+    """Which account a statement is for, from its header."""
+
     account_type: Literal["bank_account", "credit_card", "other"]
     institution: str | None = Field(description="The bank or card issuer as printed, e.g. 'RBC Royal Bank'; null if not printed.")
     account_name: str | None = Field(
         description="The account or card product as printed, e.g. 'RBC Advantage Banking' or 'Visa Infinite'. "
         "Never the account or card number. Null if not printed."
     )
+    account_last4: str | None = Field(
+        description="The last 4 digits of the account number printed on the statement (on a credit-card statement, "
+        "the card or account number). Exactly those 4 digits, never more of the number; null if none is printed."
+    )
+
+
+class ExtractedStatement(StatementAccount):
     period_start: str | None = Field(description="First day of the statement period as YYYY-MM-DD; null if not printed.")
     period_end: str | None = Field(description="Last day of the statement period as YYYY-MM-DD; null if not printed.")
     transactions: list[StatementTransaction] = Field(description="Every transaction row, in the order printed.")

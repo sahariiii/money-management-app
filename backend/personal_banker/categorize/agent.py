@@ -6,6 +6,7 @@ Dates, amounts and descriptions always come from the extraction, so neither
 the rules nor the second call can change them.
 """
 
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
@@ -15,7 +16,7 @@ from pydantic import BaseModel
 
 from ..llm import CallResult, run_structured
 from .rules import match_rule
-from .schemas import ExtractedStatement, StatementTransaction, build_decision_model
+from .schemas import ExtractedStatement, StatementAccount, StatementTransaction, build_decision_model
 from .workbook import BudgetSetup, Category, PastEntry, VendorRule
 
 EXTRACTION_INSTRUCTIONS = """\
@@ -33,8 +34,15 @@ the year from the statement period when a row omits it.
 - Copy each description as printed, joining wrapped lines with a space.
 - Put opening/closing or carried-forward balances, subtotals and summary lines \
 in other_lines, not in transactions, so nothing disappears silently.
-- Also give the bank, the account or card name and the statement period as \
-printed in the statement header (e.g. 'From July 23, 2026 to August 21, 2026')."""
+- Also give the bank, the account or card name, the last 4 digits of the \
+account number and the statement period as printed in the statement header \
+(e.g. 'From July 23, 2026 to August 21, 2026')."""
+
+ACCOUNT_INSTRUCTIONS = """\
+You read bank and credit-card statements for a personal budget. Each request \
+gives you one statement, transcribed to Markdown from page images. Say which \
+account it is for, from its header: the type of account, the bank, the account \
+or card name, and the last 4 digits of the account number (only those 4 digits)."""
 
 DECISION_INSTRUCTIONS = """\
 You sort bank and credit-card transactions into a personal budget. Each \
@@ -235,15 +243,35 @@ def statement_title(statement: ExtractedStatement) -> str | None:
     return f"{MONTHS[when.month - 1]}{when.year}" if when else None
 
 
+@braintrust.traced(notrace_io=True)
+def identify_account(client: anthropic.Anthropic, statement_markdown: str) -> CallResult[StatementAccount]:
+    """Just the account a statement is for: for statements categorized before budget.json recorded it."""
+    content = [{"type": "text", "text": f"<statement>\n{statement_markdown}\n</statement>\n\nWhich account is this statement for?"}]
+    return run_structured(client, ACCOUNT_INSTRUCTIONS, content, StatementAccount)
+
+
+def account_record(account: StatementAccount) -> dict:
+    """The account as stored in budget.json. Keeps at most the last 4 digits, whatever the model returned."""
+    digits = re.sub(r"\D", "", account.account_last4 or "")
+    return {
+        "type": account.account_type,
+        "institution": account.institution,
+        "name": account.account_name,
+        "last4": digits[-4:] if len(digits) >= 4 else None,
+    }
+
+
 def budget_record(result: CategorizationResult, workbook_name: str) -> dict:
     """Plain rows plus provenance, as stored in the library's budget.json.
 
     Rows are kept as plain dicts rather than a per-workbook model, so they
     still load after the user renames or removes a category. `title` names the
     statement after its month, e.g. 'Aug2026'; the library renames the document to it.
+    `account` says which account it is for; the app links it to the card with that account number.
     """
     return {
         "title": statement_title(result.calls[0].output),
+        "account": account_record(result.calls[0].output),
         "workbook": workbook_name,
         "categorized_at": datetime.now().isoformat(timespec="seconds"),
         "model": result.calls[0].model,

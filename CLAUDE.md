@@ -7,10 +7,10 @@ assistant that remembers spending habits. Later the backend will be FastAPI (Pyt
 Clerk for auth, SurrealDB for the ledger, SurrealDB Agent Memory for long-term memory.
 
 Current phase: UI + real auth (Clerk) + the Python backend in backend/ (FastAPI over the file
-library the Streamlit pipeline writes; no database yet). Transactions, cards (one dummy card) and
-statement upload come from the backend; budgets, bills, alerts, card rewards, receipts and chat
-aren't in the backend yet, so with it they start empty (additions last until reload) and the full
-demo exists only in mock mode.
+library the Streamlit pipeline writes; no database yet). Transactions, cards with their reward
+rules (add, edit, delete), statement upload and receipt scanning come from the backend; budgets,
+bills, alerts and chat aren't in the backend yet, so with it they start empty (additions last until
+reload) and the full demo exists only in mock mode.
 
 ## Rules
 - Expo + Expo Router + TypeScript. Must run on Android (Expo Go) AND web.
@@ -31,15 +31,17 @@ demo exists only in mock mode.
 This project uses the `src/` layout (import alias `@/*` -> `src/*`):
 - src/app/ — routes only (Expo Router). `(auth)/sign-in`, `(auth)/sign-up`, `sso-callback`,
   `(tabs)/` with 5 tabs (index, transactions, chat, cards, more), modals: upload-statement,
-  scan-receipt, transaction/[id], add-card. New modal routes must also be registered in
+  scan-receipt, transaction/[id], add-card, edit-card/[id]. New modal routes must also be registered in
   src/app/_layout.tsx, inside the signed-in `Stack.Protected` group.
 - Mocked "AI" features live in api.ts (mock mode): chat answers (on-track, restaurants, which card),
   uploadStatement (always 40 latest rows, all already in ledger), scanReceipt (always matches
   the Gusto 101 transaction). With the backend, uploadStatement really uploads and waits for the
-  backend to finish; chat replies "not connected" and scanReceipt throws. Pickers
+  backend to finish, scanReceipt sends the photo to POST /api/receipts/scan (Claude vision via
+  backend/personal_banker/receipts.py), and chat replies "not connected". Pickers
   (expo-document-picker / expo-image-picker) are real.
 - src/components/ — shared UI (Screen, Card, StatTile, ProgressBar, TransactionRow, AlertBanner,
-  Chip, SectionHeader, EmptyState, AuthScreen, CodeForm, Avatar). Import from `@/components`.
+  Chip, SectionHeader, EmptyState, AuthScreen, CodeForm, Avatar, CardForm: the add/edit card form).
+  Import from `@/components`.
 - src/constants/theme.ts — design tokens (colors, spacing, radius, fontSize, layout).
 - src/types.ts — domain types mirroring the future DB, plus API response shapes and CATEGORIES.
 - src/lib/api.ts — the only data layer. `USE_MOCK` is true when EXPO_PUBLIC_API_URL is unset.
@@ -57,6 +59,24 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
   categories (Streamlit and the workbook export need them); EXPENSE_CATEGORIES maps them onto the
   app's CATEGORIES. App edits go in a row's `app_category`, "always" rules in library/merchant_rules.json.
   Refunds (negative expenses) become isIncome: true, since app amounts are always positive.
+  Cards and reward rules live in library/cards.json. A statement's transactions go on the card whose
+  `account_last4` equals the statement's (budget.json "account".last4, from the categorizer), worked
+  out on every read, so editing a card re-links at once. Unmatched statements' transactions go on
+  DUMMY_CARD ("Unmatched statements", isPlaceholder: true, not editable), listed while any exist; the
+  Activity tab warns about them (Statement.cardMatch). Statements categorized before "account" existed
+  are "pending" until the API's startup backfill reads it from their transcription.
+  Expenses added from receipts ("Add as expense") live in library/receipts.json (ids `receipt_<hex>`,
+  source: "receipt", cardId a card or CASH_CARD_ID "cash"; only these can be deleted). find_match
+  links a receipt to an expense with the same amount within MATCH_DAYS, on the card whose `last4`
+  is printed on the receipt (or the placeholder). A receipt expense is hidden once a statement brings
+  the same purchase, and that transaction takes its category unless the user picked one.
+  Every scan is saved in library/receipts/ (`scan_<hex>`.jpg + .json: what was read, transaction_id).
+  It gets a transaction when added as an expense (ExpenseInput.receipt_id) or attached to its match
+  (POST /api/receipts/{id}/attach); unsaved scans are deleted after a day. Transaction.receiptId comes
+  from that link (or from the receipt expense a statement row replaced); GET /api/receipts/{id} returns
+  the details with the photo as a data: URL (the app can't send auth headers for an image).
+- On native, uploads (statements, receipts) must append an expo-file-system `File`, not React Native's
+  `{ uri, name, type }`: SDK 58's expo/fetch replaces global fetch and rejects those parts. See appendFile in api.ts.
 - backend/personal_banker/service.py — statement processing (extract pages, then categorize),
   shared by the API's background jobs and the Streamlit document viewer.
 

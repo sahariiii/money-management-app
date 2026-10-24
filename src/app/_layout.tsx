@@ -53,6 +53,7 @@ function RootStack() {
         <Stack.Screen name="scan-receipt" options={{ presentation: 'modal', title: 'Scan receipt' }} />
         <Stack.Screen name="transaction/[id]" options={{ presentation: 'modal', title: 'Transaction' }} />
         <Stack.Screen name="add-card" options={{ presentation: 'modal', title: 'Add card' }} />
+        <Stack.Screen name="edit-card/[id]" options={{ presentation: 'modal', title: 'Edit card' }} />
       </Stack.Protected>
     </Stack>
   );

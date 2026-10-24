@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
@@ -14,23 +14,31 @@ import {
   EmptyState,
   Loading,
   Screen,
+  ReceiptDetails,
   SectionHeader,
+  useToast,
 } from '@/components';
 import { colors, fontFamily, fontSize, fontWeight, radius, spacing, typography } from '@/constants/theme';
 import { useAsync } from '@/hooks/use-async';
-import { getCards, getTransaction, updateCategory } from '@/lib/api';
+import { deleteReceipt, deleteTransaction, getCards, getReceipt, getTransaction, updateCategory } from '@/lib/api';
 import { formatShortDate } from '@/lib/dates';
 import { formatMoney, maskCard } from '@/lib/format';
-import { CATEGORIES, type Category } from '@/types';
+import { CASH_CARD_ID, CATEGORIES, type Category } from '@/types';
 
 export default function TransactionDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const tx = useAsync(() => getTransaction(id), id);
   const cards = useAsync(getCards);
+  const receiptId = tx.data?.receiptId ?? null;
+  const receipt = useAsync(() => (receiptId ? getReceipt(receiptId) : Promise.resolve(null)), receiptId ?? '');
 
   const [pending, setPending] = useState<Category | null>(null);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const toast = useToast();
 
   if (tx.loading && !tx.data) {
     return (
@@ -50,7 +58,27 @@ export default function TransactionDetail() {
   }
 
   const card = cards.data?.find((c) => c.id === t.cardId);
-  const cardLabel = card ? `${card.nickname} ${maskCard(card.last4)}` : cards.data ? 'Unknown card' : '…';
+  const cardLabel = card
+    ? `${card.nickname} ${maskCard(card.last4)}`
+    : t.cardId === CASH_CARD_ID
+      ? 'Cash / other'
+      : cards.data
+        ? 'Unknown card'
+        : '…';
+  const fromReceipt = t.source === 'receipt';
+
+  const remove = async () => {
+    setDeleting(true);
+    try {
+      await deleteTransaction(t.id);
+      toast('Expense deleted');
+      router.back();
+    } catch (e) {
+      setNotice(null);
+      setDeleteError(e instanceof Error ? e.message : "Couldn't delete it. Try again.");
+      setDeleting(false);
+    }
+  };
   const options = t.isIncome ? CATEGORIES : CATEGORIES.filter((c) => c !== 'Income');
 
   const pick = (c: Category) => {
@@ -89,24 +117,48 @@ export default function TransactionDetail() {
 
       <Card>
         <SectionHeader title="Details" />
-        <View style={styles.cleanup}>
-          <Text style={styles.muted}>From your bank</Text>
-          <Text style={styles.raw} selectable>
-            {t.rawDescription}
+        {fromReceipt ? (
+          <Text style={styles.muted}>
+            Added from a scanned receipt. When this purchase shows up on a statement, it&apos;s linked to it instead of
+            counted twice.
           </Text>
-          <View style={styles.cleanupArrow}>
-            <Ionicons name="arrow-down" size={fontSize.md} color={colors.muted} />
-            <Text style={styles.caption}>cleaned up</Text>
+        ) : (
+          <View style={styles.cleanup}>
+            <Text style={styles.muted}>From your bank</Text>
+            <Text style={styles.raw} selectable>
+              {t.rawDescription}
+            </Text>
+            <View style={styles.cleanupArrow}>
+              <Ionicons name="arrow-down" size={fontSize.md} color={colors.muted} />
+              <Text style={styles.caption}>cleaned up</Text>
+            </View>
+            <Text style={styles.muted}>Merchant</Text>
+            <Text style={styles.cleaned}>{t.merchant}</Text>
           </View>
-          <Text style={styles.muted}>Merchant</Text>
-          <Text style={styles.cleaned}>{t.merchant}</Text>
-        </View>
+        )}
         <Divider />
         <DetailRow label="Amount" value={`${formatMoney(t.amount, t.currency)} ${t.currency}`} />
         <DetailRow label="Card" value={cardLabel} />
         <DetailRow label="Date" value={formatShortDate(t.date)} />
         <DetailRow label="Category" value={t.category} />
       </Card>
+
+      {receiptId &&
+        (receipt.data ? (
+          <ReceiptDetails
+            receipt={receipt.data}
+            onRemove={async () => {
+              await deleteReceipt(receipt.data!.id);
+              tx.setData({ ...t, receiptId: null });
+              toast('Receipt removed');
+            }}
+          />
+        ) : receipt.loading ? (
+          <Card>
+            <SectionHeader title="Receipt" />
+            <Loading />
+          </Card>
+        ) : null)}
 
       <Card>
         <SectionHeader title="Category" subtitle="Wrong category? Pick the right one." />
@@ -131,6 +183,31 @@ export default function TransactionDetail() {
 
         {notice && <AlertBanner tone="success" title={notice} />}
       </Card>
+
+      {fromReceipt && (
+        <Card>
+          <SectionHeader title="Delete expense" />
+          {confirmingDelete ? (
+            <>
+              <Text style={styles.muted}>Delete this expense? This can&apos;t be undone.</Text>
+              <View style={styles.confirmActions}>
+                <Button label="Yes, delete" icon="trash-outline" variant="danger" size="sm" onPress={remove} loading={deleting} />
+                <Button label="Keep it" variant="secondary" size="sm" onPress={() => setConfirmingDelete(false)} disabled={deleting} />
+              </View>
+            </>
+          ) : (
+            <Button
+              label="Delete expense"
+              icon="trash-outline"
+              variant="danger"
+              size="sm"
+              style={styles.start}
+              onPress={() => setConfirmingDelete(true)}
+            />
+          )}
+          {deleteError && <AlertBanner tone="danger" title={deleteError} />}
+        </Card>
+      )}
     </Screen>
   );
 }
@@ -159,4 +236,5 @@ const styles = StyleSheet.create({
   confirmText: typography.body,
   bold: { fontWeight: fontWeight.bold },
   confirmActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  start: { alignSelf: 'flex-start' },
 });

@@ -13,6 +13,10 @@
           001.json, 001.md, document.md
         budget.json           categorized expense / income / skipped rows, including the user's edits
       merchant_rules.json      merchant -> app category, from "always categorize" in the mobile app
+      cards.json               the mobile app's cards and their reward rules (last 4 digits only)
+      receipts.json            expenses added from scanned receipts in the mobile app
+      receipts/<scan id>.jpg   a scanned receipt's photo (upright, at most 1568 px)
+      receipts/<scan id>.json  what was read from it, and the transaction it belongs to
 
 The folder is configurable with PERSONAL_BANKER_LIBRARY and is git-ignored.
 """
@@ -216,3 +220,47 @@ class Library:
 
     def save_merchant_rules(self, rules: dict[str, str]) -> None:
         _write_json(self.root / "merchant_rules.json", rules)
+
+    # --- App cards -------------------------------------------------------------------
+
+    def cards(self) -> dict:
+        """The app's cards and their reward rules: {"cards": [...], "reward_rules": [...]} (see ledger.py)."""
+        path = self.root / "cards.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"cards": [], "reward_rules": []}
+
+    def save_cards(self, data: dict) -> None:
+        _write_json(self.root / "cards.json", data)
+
+    # --- Expenses added from receipts ---------------------------------------------------
+
+    def receipt_expenses(self) -> list[dict]:
+        """Expenses the user added from scanned receipts (see ledger.py); the photos aren't kept."""
+        path = self.root / "receipts.json"
+        return json.loads(path.read_text(encoding="utf-8"))["expenses"] if path.exists() else []
+
+    def save_receipt_expenses(self, expenses: list[dict]) -> None:
+        _write_json(self.root / "receipts.json", {"expenses": expenses})
+
+    # --- Scanned receipts (photo + what was read from it) -----------------------------
+    # Ids are checked by the caller (ledger.is_scan_id) before they reach a path.
+
+    def scans(self) -> list[dict]:
+        folder = self.root / "receipts"
+        return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(folder.glob("*.json"))] if folder.exists() else []
+
+    def scan(self, scan_id: str) -> dict | None:
+        path = self.root / "receipts" / f"{scan_id}.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+    def scan_image(self, scan_id: str) -> bytes | None:
+        path = self.root / "receipts" / f"{scan_id}.jpg"
+        return path.read_bytes() if path.exists() else None
+
+    def save_scan(self, scan: dict, image_jpeg: bytes | None = None) -> None:
+        if image_jpeg is not None:
+            _write(self.root / "receipts" / f"{scan['id']}.jpg", image_jpeg)
+        _write_json(self.root / "receipts" / f"{scan['id']}.json", scan)
+
+    def delete_scan(self, scan_id: str) -> None:
+        for suffix in (".json", ".jpg"):
+            (self.root / "receipts" / f"{scan_id}{suffix}").unlink(missing_ok=True)

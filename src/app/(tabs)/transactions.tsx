@@ -2,14 +2,14 @@ import { router } from 'expo-router';
 import { Fragment, useState, type ReactNode } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { Card, Chip, Divider, EmptyState, Loading, Screen, TransactionRow } from '@/components';
+import { AlertBanner, Card, Chip, Divider, EmptyState, Loading, Screen, TransactionRow } from '@/components';
 import { colors, fontWeight, layout, spacing, typography } from '@/constants/theme';
 import { useAsync } from '@/hooks/use-async';
 import { useLayout } from '@/hooks/use-layout';
-import { getCards, getTransactions, resolveRange, today } from '@/lib/api';
+import { getCards, getStatements, getTransactions, resolveRange, today } from '@/lib/api';
 import { addDays, formatShortDate } from '@/lib/dates';
 import { formatMoney, maskCard } from '@/lib/format';
-import { CATEGORIES, type Category, type RangePreset, type Transaction } from '@/types';
+import { CASH_CARD_ID, CATEGORIES, type Category, type RangePreset, type Statement, type Transaction } from '@/types';
 
 const RANGES: { key: RangePreset; label: string }[] = [
   { key: 'this-month', label: 'This month' },
@@ -47,6 +47,15 @@ function groupByDate(txs: Transaction[]) {
   return groups;
 }
 
+/** Which statements matched no card, and how to fix it. */
+function unmatchedMessage(list: Statement[]) {
+  const which = list
+    .map((s) => `${s.name.replace(/\.pdf$/i, '')}: ${s.accountLast4 ? `account ${maskCard(s.accountLast4)}` : 'no account number found on it'}`)
+    .join(' · ');
+  const theirs = list.length === 1 ? 'its' : 'their';
+  return `${which}. Until then ${theirs} transactions are under "Unmatched statements". Add the account number to the right card (Cards → Edit) to link them.`;
+}
+
 function dayLabel(date: string) {
   const now = today();
   if (date === now) return `Today · ${formatShortDate(date)}`;
@@ -64,6 +73,8 @@ export default function Transactions() {
   const filters = { from: range.from, to: range.to, cardId, category };
   const txs = useAsync(() => getTransactions(filters), JSON.stringify(filters));
   const cards = useAsync(getCards);
+  const statements = useAsync(getStatements);
+  const unmatched = (statements.data ?? []).filter((s) => s.cardMatch === 'no_match' || s.cardMatch === 'no_account_number');
 
   const cardById = new Map((cards.data ?? []).map((c) => [c.id, c]));
   const list = txs.data ?? [];
@@ -73,6 +84,19 @@ export default function Transactions() {
 
   return (
     <Screen>
+      {unmatched.length > 0 && (
+        <AlertBanner
+          tone="warning"
+          title={
+            unmatched.length === 1
+              ? "1 statement doesn't match any of your cards"
+              : `${unmatched.length} statements don't match any of your cards`
+          }
+          message={unmatchedMessage(unmatched)}
+          actions={[{ label: 'Go to cards', onPress: () => router.push('/cards') }]}
+        />
+      )}
+
       <View style={styles.filters}>
         <FilterRow label="Dates" wrap={isWide}>
           {RANGES.map((r) => (
@@ -135,7 +159,13 @@ export default function Transactions() {
                       <TransactionRow
                         merchant={t.merchant}
                         category={t.category}
-                        subtitle={card ? `${t.category} · ${maskCard(card.last4)}` : t.category}
+                        subtitle={
+                          card
+                            ? `${t.category} · ${maskCard(card.last4)}`
+                            : t.cardId === CASH_CARD_ID
+                              ? `${t.category} · Cash`
+                              : t.category
+                        }
                         amount={t.amount}
                         isIncome={t.isIncome}
                         currency={t.currency}

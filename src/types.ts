@@ -37,6 +37,8 @@ export type Card = {
   interestRate: number;
   /** Day of month the statement closes. */
   cycleDay: number;
+  /** The backend's stand-in card, listed until the user adds one; it can't be edited or deleted. */
+  isPlaceholder?: boolean;
 };
 
 export type RewardRule = {
@@ -57,9 +59,17 @@ export type Transaction = {
   rawDescription: string;
   merchant: string;
   category: Category;
+  /** A card's id, or CASH_CARD_ID. */
   cardId: string;
   isIncome: boolean;
+  /** receipt: added from a scanned receipt (the user can delete it). Statement rows otherwise. */
+  source?: 'statement' | 'receipt';
+  /** A scanned receipt saved with it; load it with getReceipt. */
+  receiptId?: string | null;
 };
+
+/** cardId of an expense paid in cash, or with anything that isn't one of the user's cards. */
+export const CASH_CARD_ID = 'cash';
 
 export type Budget = {
   category: Category;
@@ -180,7 +190,8 @@ export type CardOptimizer = {
 
 export type CategoryUpdate = { transaction: Transaction; affectedCount: number };
 
-export type NewCardInput = Omit<Card, 'id'> & {
+/** What the add and edit card forms save: a card's details plus all of its reward rules. */
+export type NewCardInput = Omit<Card, 'id' | 'isPlaceholder'> & {
   rules: Omit<RewardRule, 'cardId'>[];
 };
 
@@ -214,16 +225,72 @@ export type Statement = {
   message: string | null;
   /** Transactions it added to the ledger, once done. */
   transactionCount: number | null;
+  /** Last 4 digits of the account number printed on the statement. */
+  accountLast4: string | null;
+  /**
+   * Whether a card's account number matches the statement's (null until categorized). no_match and
+   * no_account_number put its transactions on the placeholder card; pending: still being read.
+   */
+  cardMatch: 'matched' | 'no_match' | 'no_account_number' | 'pending' | null;
+  /** The matching card. */
+  cardId: string | null;
 };
 
+/** What was read from a receipt photo. Missing values are null when the receipt doesn't print them. */
 export type ReceiptScan = {
   merchant: string;
-  date: ISODate;
-  subtotal: number;
-  tax: number;
-  taxLabel: string;
+  date: ISODate | null;
+  subtotal: number | null;
+  tax: number | null;
+  taxLabel: string | null;
   total: number;
   currency: string;
-  /** Existing ledger transaction this receipt matches, if any. */
+  items: { description: string; amount: number }[];
+  /** Suggested category for adding it as an expense. */
+  category: Category;
+  /** Last 4 digits of the card number printed on the receipt. */
+  cardLast4: string | null;
+  /** The user's card with that number. */
+  cardId: string | null;
+  /**
+   * The ledger expense this receipt is for: same amount, dated within a few days, on its card
+   * (or on the placeholder) when the receipt names one.
+   */
   matchedTransaction: Transaction | null;
+  /**
+   * The saved scan (photo and what was read). It's kept once added as an expense or attached to
+   * the matched transaction (attachReceipt); otherwise it's deleted after a day. Null in mock mode.
+   */
+  receiptId: string | null;
+};
+
+/** A saved receipt scan, as shown on its transaction. */
+export type Receipt = {
+  id: string;
+  scannedAt: string;
+  merchant: string;
+  date: ISODate | null;
+  subtotal: number | null;
+  tax: number | null;
+  taxLabel: string | null;
+  total: number;
+  currency: string;
+  items: { description: string; amount: number }[];
+  cardLast4: string | null;
+  transactionId: string | null;
+  /** The photo as a data: URL. */
+  imageDataUrl: string | null;
+};
+
+/** An expense added from a scanned receipt. */
+export type NewExpenseInput = {
+  date: ISODate;
+  amount: number;
+  currency: string;
+  merchant: string;
+  category: Category;
+  /** A card's id, or CASH_CARD_ID. */
+  cardId: string;
+  /** The scan it came from, saved with it. */
+  receiptId?: string;
 };

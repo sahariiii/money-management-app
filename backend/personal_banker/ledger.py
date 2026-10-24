@@ -8,10 +8,12 @@ rule for its merchant, else the mapping of its workbook category below.
 """
 
 import re
+import secrets
 import threading
-from typing import Literal, get_args
+from datetime import date, datetime
+from typing import Annotated, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 from .store import Library, StoredDocument
@@ -71,16 +73,47 @@ class AppModel(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
-class Card(AppModel):
-    id: str
-    institution: str
+# Card and account numbers are only ever kept as their last 4 digits.
+Last4 = Annotated[str, Field(pattern=r"^\d{4}$")]
+
+
+class CardFields(AppModel):
+    institution: str = Field(min_length=1, max_length=60)
     type: Literal["debit", "credit"]
-    nickname: str
-    last4: str
-    account_last4: str | None = None  # last 4 digits of the card's bank account; never the full number
-    annual_fee: float
-    interest_rate: float
-    cycle_day: int
+    nickname: str = Field(min_length=1, max_length=60)
+    last4: Last4
+    account_last4: Last4 | None = None  # the card's bank account
+    annual_fee: float = Field(ge=0)
+    interest_rate: float = Field(ge=0, le=60)  # APR in percent; 0 for debit
+    cycle_day: int = Field(ge=1, le=28)
+
+
+class Card(CardFields):
+    id: str
+    is_placeholder: bool = False
+
+
+class RewardRuleFields(AppModel):
+    category: AppCategory | Literal["*"]  # "*": every category without its own rule
+    rate_percent: float = Field(gt=0, le=20)
+    cap: float | None = Field(default=None, gt=0)  # monthly spend limit for this rate
+
+
+class RewardRule(RewardRuleFields):
+    card_id: str
+
+
+class CardInput(CardFields):
+    """A card as the app's add and edit forms send it (NewCardInput in src/types.ts)."""
+
+    rules: list[RewardRuleFields] = []
+
+    @model_validator(mode="after")
+    def _one_rule_per_category(self) -> "CardInput":
+        categories = [r.category for r in self.rules]
+        if len(categories) != len(set(categories)):
+            raise ValueError("Each category can only have one reward rule.")
+        return self
 
 
 class Transaction(AppModel):
@@ -93,6 +126,8 @@ class Transaction(AppModel):
     category: AppCategory
     card_id: str
     is_income: bool
+    source: Literal["statement", "receipt"] = "statement"
+    receipt_id: str | None = None  # a scanned receipt saved with it (see "Scanned receipts" below)
 
 
 class CategoryUpdate(AppModel):
@@ -100,17 +135,20 @@ class CategoryUpdate(AppModel):
     affected_count: int
 
 
-# The library doesn't know which card or account a statement belongs to yet,
-# so every transaction is on this placeholder.
+# A statement's transactions are on the card whose account number ends in the
+# statement's last 4 digits (see statement_match). Statements that match no card
+# have theirs on this placeholder, which the app lists while there are any (or
+# until the user adds a card) and can't edit or delete.
 DUMMY_CARD = Card(
     id="card_dummy",
     institution="Placeholder",
     type="debit",
-    nickname="Dummy card",
+    nickname="Unmatched statements",
     last4="0000",
     annual_fee=0,
     interest_rate=0,
     cycle_day=1,
+    is_placeholder=True,
 )
 
 # Transaction ids are "<document id>-<e|i><row>": the row's place in the
@@ -119,8 +157,16 @@ KINDS = {"e": "expenses", "i": "income"}
 _LETTERS = {kind: letter for letter, kind in KINDS.items()}
 _DOC_ID = re.compile(r"[a-z0-9-]+")
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# Expenses added from receipts are "receipt_<hex>"; the underscore never appears in a document id.
+_RECEIPT_ID = re.compile(r"receipt_[0-9a-f]{12}")
 
-# Recategorizing rewrites budget.json files; one write at a time.
+# The card id of an expense paid in cash (or with anything that isn't one of the user's cards).
+CASH_CARD_ID = "cash"
+# A receipt is for an expense with the same amount dated this many days either side of it:
+# card purchases often post a day or two after the receipt's date.
+MATCH_DAYS = 4
+
+# Recategorizing rewrites budget.json files, and card edits cards.json; one write at a time.
 _write_lock = threading.Lock()
 
 
@@ -142,7 +188,7 @@ def _merchant(kind: str, row: dict) -> str:
     return name or row.get("statement_description") or "Unknown"
 
 
-def _transaction(doc_id: str, kind: str, index: int, row: dict, rules: dict[str, str]) -> Transaction | None:
+def _transaction(doc_id: str, kind: str, index: int, row: dict, rules: dict[str, str], card_id: str) -> Transaction | None:
     """The row as an app transaction; None for a row without a usable date."""
     date = row.get("date")
     if not isinstance(date, str) or not _ISO_DATE.fullmatch(date):
@@ -161,7 +207,7 @@ def _transaction(doc_id: str, kind: str, index: int, row: dict, rules: dict[str,
         raw_description=row.get("statement_description") or "",
         merchant=merchant,
         category=category,
-        card_id=DUMMY_CARD.id,
+        card_id=card_id,
         # A refund is a negative expense and money out recorded as income is
         # negative, so the sign says which way the money went.
         is_income=(kind == "income") == (amount >= 0),
@@ -174,13 +220,85 @@ def _rows(budget: dict):
             yield kind, index, row
 
 
+def _receipt_transaction(row: dict, rules: dict[str, str]) -> Transaction:
+    merchant = row["merchant"]
+    category = next(
+        (c for c in (row.get("app_category"), rules.get(merchant)) if c in APP_CATEGORIES and c != "Income"), "Other"
+    )
+    return Transaction(
+        id=row["id"],
+        date=row["date"],
+        amount=row["amount"],
+        currency=row.get("currency") or CURRENCY,
+        raw_description=f"Receipt from {merchant}",
+        merchant=merchant,
+        category=category,
+        card_id=row["card_id"],
+        is_income=False,
+        source="receipt",
+    )
+
+
+def card_by_number(library: Library, last4: str | None) -> Card | None:
+    """The user's card whose number ends in `last4`, as printed on a receipt."""
+    return next((c for c in _saved_cards(library)[0] if last4 and c.last4 == last4), None)
+
+
+def find_match(txs: list[Transaction], amount: float, day: str | None, card_id: str | None = None) -> Transaction | None:
+    """The expense a receipt is for: the same amount to the cent, dated within MATCH_DAYS of `day`
+    (the closest wins; without a date, the most recent).
+
+    With `card_id` (the card the receipt was paid with), only expenses on that card count, or on
+    the placeholder, whose statement's card isn't known yet; that card wins a tie.
+    """
+    same = [t for t in txs if not t.is_income and abs(t.amount - amount) < 0.005]
+    if card_id is not None:
+        same = [t for t in same if t.card_id in (card_id, DUMMY_CARD.id)]
+    if day is None:
+        return max(same, key=lambda t: (t.date, t.card_id == card_id), default=None)
+    when = date.fromisoformat(day)
+    near = [(abs((date.fromisoformat(t.date) - when).days), t.card_id != card_id, t) for t in same]
+    return min((p for p in near if p[0] <= MATCH_DAYS), key=lambda p: p[:2], default=(0, False, None))[2]
+
+
 def transactions(library: Library) -> list[Transaction]:
-    """Every categorized row in the library, newest first."""
+    """Every categorized statement row and receipt expense in the library, newest first.
+
+    A receipt expense is left out once a statement brings the same purchase (see find_match),
+    so it isn't counted twice; that transaction shows under the receipt's category unless the
+    user picked one for it.
+    """
     rules = library.merchant_rules()
-    result = []
+    saved = _saved_cards(library)[0]
+    result: list[Transaction] = []
+    explicit: set[str] = set()  # statement transactions whose category the user chose
     for doc in library.documents():
         if (budget := library.budget(doc)) is not None:
-            result += [t for kind, i, row in _rows(budget) if (t := _transaction(doc.id, kind, i, row, rules))]
+            card_id = _card_id(budget, saved)
+            for kind, i, row in _rows(budget):
+                if t := _transaction(doc.id, kind, i, row, rules, card_id):
+                    result.append(t)
+                    if row.get("app_category") in APP_CATEGORIES or rules.get(t.merchant) in APP_CATEGORIES:
+                        explicit.add(t.id)
+
+    linked = {s["transaction_id"]: s["id"] for s in library.scans() if s.get("transaction_id")}
+    claimed: dict[str, str] = {}  # statement transaction id -> the receipt expense it replaces
+    for receipt in (_receipt_transaction(row, rules) for row in library.receipt_expenses()):
+        open_ = [t for t in result if t.source == "statement" and t.id not in claimed]
+        # A cash purchase never shows up on a statement.
+        paid_by_card = receipt.card_id != CASH_CARD_ID
+        if not paid_by_card or (match := find_match(open_, receipt.amount, receipt.date, receipt.card_id)) is None:
+            result.append(receipt)
+            continue
+        claimed[match.id] = receipt.id
+        if match.id not in explicit:
+            result[result.index(match)] = match.model_copy(update={"category": receipt.category})
+
+    # Each transaction shows its own receipt, else that of the receipt expense it replaced.
+    def receipt_of(t: Transaction) -> str | None:
+        return linked.get(t.id) or linked.get(claimed.get(t.id, ""))
+
+    result = [t.model_copy(update={"receipt_id": rid}) if (rid := receipt_of(t)) else t for t in result]
     return sorted(result, key=lambda t: (t.date, t.id), reverse=True)
 
 
@@ -198,10 +316,18 @@ def _locate(library: Library, tx_id: str) -> tuple[StoredDocument, dict, str, in
 
 
 def transaction(library: Library, tx_id: str) -> Transaction | None:
-    if (found := _locate(library, tx_id)) is None:
+    """As transactions() shows it; a receipt expense a statement has since brought is still found by its id."""
+    if found := next((t for t in transactions(library) if t.id == tx_id), None):
+        return found
+    row = next((r for r in library.receipt_expenses() if r["id"] == tx_id), None)
+    if row is None:
         return None
-    doc, budget, kind, index = found
-    return _transaction(doc.id, kind, index, budget[kind][index], library.merchant_rules())
+    scan_id = next((s["id"] for s in library.scans() if s.get("transaction_id") == tx_id), None)
+    return _receipt_transaction(row, library.merchant_rules()).model_copy(update={"receipt_id": scan_id})
+
+
+def is_receipt_id(tx_id: str) -> bool:
+    return bool(_RECEIPT_ID.fullmatch(tx_id))
 
 
 def recategorize(library: Library, tx_id: str, category: AppCategory, always_for_merchant: bool) -> CategoryUpdate | None:
@@ -211,18 +337,33 @@ def recategorize(library: Library, tx_id: str, category: AppCategory, always_for
     including ones from statements added later. Returns None for an unknown id.
     """
     with _write_lock:
-        if (found := _locate(library, tx_id)) is None:
+        receipts = library.receipt_expenses()
+        if is_receipt_id(tx_id):
+            if (row := next((r for r in receipts if r["id"] == tx_id), None)) is None:
+                return None
+            merchant = row["merchant"]
+            if not always_for_merchant:
+                row["app_category"] = category
+                library.save_receipt_expenses(receipts)
+                return CategoryUpdate(transaction=transaction(library, tx_id), affected_count=1)
+        elif (found := _locate(library, tx_id)) is None:
             return None
-        doc, budget, kind, index = found
-        if not always_for_merchant:
-            budget[kind][index]["app_category"] = category
-            library.save_budget(doc, budget)
-            return CategoryUpdate(transaction=transaction(library, tx_id), affected_count=1)
+        else:
+            doc, budget, kind, index = found
+            merchant = _merchant(kind, budget[kind][index])
+            if not always_for_merchant:
+                budget[kind][index]["app_category"] = category
+                library.save_budget(doc, budget)
+                return CategoryUpdate(transaction=transaction(library, tx_id), affected_count=1)
 
-        merchant = _merchant(kind, budget[kind][index])
         library.save_merchant_rules({**library.merchant_rules(), merchant: category})
         # Rows picked one at a time before now follow the rule too.
-        affected = 0
+        same = [r for r in receipts if r["merchant"] == merchant]
+        for r in same:
+            r.pop("app_category", None)
+        if same:
+            library.save_receipt_expenses(receipts)
+        affected = len(same)
         for other in library.documents():
             if (other_budget := library.budget(other)) is None:
                 continue
@@ -234,3 +375,218 @@ def recategorize(library: Library, tx_id: str, category: AppCategory, always_for
             if changed:
                 library.save_budget(other, other_budget)
         return CategoryUpdate(transaction=transaction(library, tx_id), affected_count=affected)
+
+
+# ---------------------------------------------------------------------------
+# Cards
+
+
+def _saved_cards(library: Library) -> tuple[list[Card], list[RewardRule]]:
+    data = library.cards()
+    return (
+        [Card.model_validate(c) for c in data.get("cards", [])],
+        [RewardRule.model_validate(r) for r in data.get("reward_rules", [])],
+    )
+
+
+def _save_cards(library: Library, cards_: list[Card], rules: list[RewardRule]) -> None:
+    library.save_cards({"cards": [c.model_dump() for c in cards_], "reward_rules": [r.model_dump() for r in rules]})
+
+
+def _from_input(card_id: str, data: CardInput) -> tuple[Card, list[RewardRule]]:
+    card = Card(id=card_id, **data.model_dump(exclude={"rules"}))
+    return card, [RewardRule(card_id=card_id, **r.model_dump()) for r in data.rules]
+
+
+CardMatch = Literal["matched", "no_match", "no_account_number", "pending"]
+
+
+def statement_account_last4(budget: dict) -> str | None:
+    return (budget.get("account") or {}).get("last4")
+
+
+def _matching_card(budget: dict, saved: list[Card]) -> Card | None:
+    """The first card added whose account number ends in the statement's last 4 digits."""
+    last4 = statement_account_last4(budget)
+    return next((c for c in saved if last4 and c.account_last4 == last4), None)
+
+
+def _card_id(budget: dict, saved: list[Card]) -> str:
+    """The card a statement's transactions are on: the matching card, else the placeholder."""
+    return card.id if (card := _matching_card(budget, saved)) else DUMMY_CARD.id
+
+
+def statement_match(library: Library, budget: dict) -> tuple[CardMatch, str | None]:
+    """How a categorized statement matches the user's cards, and the matching card's id.
+
+    "pending": statements categorized before budget.json recorded the account, until it is filled in.
+    """
+    if "account" not in budget:
+        return "pending", None
+    if not statement_account_last4(budget):
+        return "no_account_number", None
+    card = _matching_card(budget, _saved_cards(library)[0])
+    return ("matched", card.id) if card else ("no_match", None)
+
+
+def cards(library: Library) -> list[Card]:
+    """The user's cards, in the order added, plus the placeholder while any statement matches none of them."""
+    saved = _saved_cards(library)[0]
+    budgets = (b for doc in library.documents() if (b := library.budget(doc)) is not None)
+    unmatched = not saved or any(_matching_card(b, saved) is None for b in budgets)
+    return [*saved, DUMMY_CARD] if unmatched else saved
+
+
+def set_statement_account(library: Library, doc: StoredDocument, account: dict) -> None:
+    """Records which account a categorized statement is for (see categorize.account_record)."""
+    with _write_lock:
+        if (budget := library.budget(doc)) is not None:
+            library.save_budget(doc, {**budget, "account": account})
+
+
+def reward_rules(library: Library) -> list[RewardRule]:
+    return _saved_cards(library)[1]
+
+
+def add_card(library: Library, data: CardInput) -> Card:
+    with _write_lock:
+        saved, rules = _saved_cards(library)
+        card, card_rules = _from_input(f"card_{secrets.token_hex(6)}", data)
+        _save_cards(library, [*saved, card], [*rules, *card_rules])
+    return card
+
+
+def update_card(library: Library, card_id: str, data: CardInput) -> Card | None:
+    """Replaces the card's details and reward rules; None for an unknown card (or the placeholder)."""
+    with _write_lock:
+        saved, rules = _saved_cards(library)
+        if not any(c.id == card_id for c in saved):
+            return None
+        card, card_rules = _from_input(card_id, data)
+        _save_cards(
+            library,
+            [card if c.id == card_id else c for c in saved],
+            [*(r for r in rules if r.card_id != card_id), *card_rules],
+        )
+    return card
+
+
+def delete_card(library: Library, card_id: str) -> bool:
+    """Removes the card and its reward rules; False for an unknown card (or the placeholder)."""
+    with _write_lock:
+        saved, rules = _saved_cards(library)
+        if not any(c.id == card_id for c in saved):
+            return False
+        _save_cards(library, [c for c in saved if c.id != card_id], [r for r in rules if r.card_id != card_id])
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Expenses added from receipts
+
+
+class ExpenseInput(AppModel):
+    """An expense the user adds from a scanned receipt (NewExpenseInput in src/types.ts)."""
+
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    amount: float = Field(gt=0, le=1_000_000)
+    currency: str = Field(default=CURRENCY, pattern=r"^[A-Z]{3}$")
+    merchant: str = Field(min_length=1, max_length=80)
+    category: AppCategory
+    card_id: str  # one of the user's cards, or CASH_CARD_ID
+    receipt_id: str | None = None  # the scan it was read from, saved with it
+
+    @model_validator(mode="after")
+    def _check(self) -> "ExpenseInput":
+        date.fromisoformat(self.date)  # a real day, not just the right shape
+        if self.category == "Income":
+            raise ValueError("An expense can't be in the Income category.")
+        return self
+
+
+class UnknownCard(ValueError):
+    pass
+
+
+def add_receipt_expense(library: Library, data: ExpenseInput) -> Transaction:
+    if data.card_id != CASH_CARD_ID and not any(c.id == data.card_id for c in _saved_cards(library)[0]):
+        raise UnknownCard("That card doesn't exist anymore.")
+    row = {
+        "id": f"receipt_{secrets.token_hex(6)}",
+        "date": data.date,
+        "amount": round(data.amount, 2),
+        "currency": data.currency,
+        "merchant": data.merchant.strip(),
+        "app_category": data.category,
+        "card_id": data.card_id,
+        "added_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    with _write_lock:
+        library.save_receipt_expenses([*library.receipt_expenses(), row])
+    if data.receipt_id:
+        attach_receipt(library, data.receipt_id, row["id"])
+    return transaction(library, row["id"])
+
+
+def delete_receipt_expense(library: Library, tx_id: str) -> bool:
+    """Removes the expense and its receipt; False when there is no such receipt expense."""
+    with _write_lock:
+        rows = library.receipt_expenses()
+        if not any(r["id"] == tx_id for r in rows):
+            return False
+        library.save_receipt_expenses([r for r in rows if r["id"] != tx_id])
+        for scan in library.scans():
+            if scan.get("transaction_id") == tx_id:
+                library.delete_scan(scan["id"])
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Scanned receipts
+#
+# Every scan is saved: the photo Claude read and what it read from it. It belongs
+# to a transaction once the user adds it as an expense or saves it to the expense
+# it matched; scans that never get one are deleted after a day.
+
+_SCAN_ID = re.compile(r"scan_[0-9a-f]{12}")
+UNSAVED_SCAN_HOURS = 24
+
+
+def is_scan_id(scan_id: str) -> bool:
+    return bool(_SCAN_ID.fullmatch(scan_id))
+
+
+def save_scan(library: Library, read: dict, image_jpeg: bytes) -> str:
+    """Keeps a new scan, for now without a transaction; returns its id."""
+    now = datetime.now()
+    with _write_lock:
+        for old in library.scans():
+            scanned = datetime.fromisoformat(old["scanned_at"])
+            if not old.get("transaction_id") and (now - scanned).total_seconds() > UNSAVED_SCAN_HOURS * 3600:
+                library.delete_scan(old["id"])
+        scan_id = f"scan_{secrets.token_hex(6)}"
+        library.save_scan({"id": scan_id, "scanned_at": now.isoformat(timespec="seconds"), **read, "transaction_id": None}, image_jpeg)
+    return scan_id
+
+
+def attach_receipt(library: Library, scan_id: str, tx_id: str) -> Transaction | None:
+    """Saves the scan with the transaction, replacing a receipt it had; None for an unknown scan or transaction."""
+    if not is_scan_id(scan_id) or transaction(library, tx_id) is None:
+        return None
+    with _write_lock:
+        if (scan := library.scan(scan_id)) is None:
+            return None
+        for other in library.scans():
+            if other.get("transaction_id") == tx_id and other["id"] != scan_id:
+                library.delete_scan(other["id"])
+        library.save_scan({**scan, "transaction_id": tx_id})
+    return transaction(library, tx_id)
+
+
+def delete_receipt(library: Library, scan_id: str) -> bool:
+    """Deletes a scan and its photo; the transaction stays. False for an unknown scan."""
+    with _write_lock:
+        if not is_scan_id(scan_id) or library.scan(scan_id) is None:
+            return False
+        library.delete_scan(scan_id)
+    return True
