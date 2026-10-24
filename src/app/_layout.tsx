@@ -10,7 +10,7 @@ function requirePublishableKey(): string {
   const key = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
   if (!key) {
     throw new Error(
-      'Missing EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY. Add it to money-app/.env (Clerk Dashboard → API keys), ' +
+      'Missing EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY. Add it to .env in the project root (see .env.example; Clerk Dashboard → API keys), ' +
         'then restart with `npx expo start --clear`.',
     );
   }

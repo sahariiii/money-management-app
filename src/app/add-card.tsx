@@ -24,6 +24,7 @@ export default function AddCard() {
   const [institution, setInstitution] = useState('');
   const [type, setType] = useState<CardType['type']>('credit');
   const [last4, setLast4] = useState('');
+  const [accountLast4, setAccountLast4] = useState('');
   const [annualFee, setAnnualFee] = useState('0');
   const [interestRate, setInterestRate] = useState('');
   const [cycleDay, setCycleDay] = useState('1');
@@ -42,6 +43,7 @@ export default function AddCard() {
     if (!nickname.trim()) e.nickname = 'Give the card a name you will recognize.';
     if (!institution.trim()) e.institution = 'Which bank issued it?';
     if (!/^\d{4}$/.test(last4)) e.last4 = 'Enter exactly the last 4 digits.';
+    if (accountLast4 && !/^\d{4}$/.test(accountLast4)) e.accountLast4 = 'Enter the last 4 digits, or leave it empty.';
     const fee = num(annualFee);
     if (!(fee >= 0)) e.annualFee = 'Enter 0 or more.';
     const apr = type === 'credit' ? num(interestRate) : 0;
@@ -63,6 +65,7 @@ export default function AddCard() {
       institution: institution.trim(),
       type,
       last4,
+      accountLast4: accountLast4 || undefined,
       annualFee: fee,
       interestRate: apr,
       cycleDay: day,
@@ -136,12 +139,15 @@ export default function AddCard() {
           />
           <TextField
             style={half}
-            label="Statement closes on day"
-            value={cycleDay}
-            onChangeText={setCycleDay}
+            label="Account number (optional)"
+            prefix="••••"
+            placeholder="5678"
+            value={accountLast4}
+            // Same as the card number: keep the last 4 digits of whatever is typed or pasted.
+            onChangeText={(v) => setAccountLast4(v.replace(/\D/g, '').slice(-4))}
             keyboardType="number-pad"
-            maxLength={2}
-            error={errors.cycleDay}
+            error={errors.accountLast4}
+            hint="The account it belongs to, from your statement. Only the last 4 are kept."
           />
         </View>
 
@@ -168,6 +174,15 @@ export default function AddCard() {
             />
           )}
         </View>
+
+        <TextField
+          label="Statement closes on day"
+          value={cycleDay}
+          onChangeText={setCycleDay}
+          keyboardType="number-pad"
+          maxLength={2}
+          error={errors.cycleDay}
+        />
       </Card>
 
       <Card>

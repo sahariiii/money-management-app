@@ -6,7 +6,7 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { AlertBanner, Button, Card, DetailRow, EmptyState, Screen, SectionHeader } from '@/components';
 import { colors, layout, spacing, typography } from '@/constants/theme';
-import { uploadStatement } from '@/lib/api';
+import { ApiError, uploadStatement } from '@/lib/api';
 import { formatShortDate } from '@/lib/dates';
 import { formatMoney } from '@/lib/format';
 import type { PickedFile, StatementUpload } from '@/types';
@@ -65,9 +65,10 @@ export default function UploadStatement() {
       await wait(900);
       setStep(3);
       setPhase('done');
-    } catch {
+    } catch (e) {
       setPhase('idle');
-      setError("Couldn't read that file. Try a CSV or PDF statement.");
+      // The backend says why (e.g. "Extracted, but not categorized. ..."); anything else is the file itself.
+      setError(e instanceof ApiError ? e.message : "Couldn't read that file. Try a CSV or PDF statement.");
     }
   }
 

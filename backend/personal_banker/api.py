@@ -149,10 +149,10 @@ async def lifespan(_: FastAPI):
     if auth.is_open():
         log.warning(
             "Neither %s nor %s is set: anyone who can reach this server can read your statements.",
-            auth.CLERK_KEY_ENV,
+            auth.APP_CLERK_KEY_ENV,
             auth.TOKEN_ENV,
         )
-    elif os.environ.get(auth.CLERK_KEY_ENV) and not os.environ.get(auth.ALLOWED_USERS_ENV):
+    elif auth.publishable_key() and not os.environ.get(auth.ALLOWED_USERS_ENV):
         log.warning("%s isn't set: anyone who can sign in to the app can read your statements.", auth.ALLOWED_USERS_ENV)
     yield
     _jobs.shutdown(wait=False, cancel_futures=True)

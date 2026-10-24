@@ -77,6 +77,7 @@ class Card(AppModel):
     type: Literal["debit", "credit"]
     nickname: str
     last4: str
+    account_last4: str | None = None  # last 4 digits of the card's bank account; never the full number
     annual_fee: float
     interest_rate: float
     cycle_day: int

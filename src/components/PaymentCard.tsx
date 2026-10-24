@@ -17,7 +17,7 @@ import {
 import { formatMoney, maskCard } from '@/lib/format';
 import type { Card } from '@/types';
 
-/** A card styled like a physical payment card. Shows last 4 digits only. */
+/** A card styled like a physical payment card. Shows last 4 digits only, of the card and its account. */
 export function PaymentCard({ card }: { card: Card }) {
   return (
     <LinearGradient
@@ -37,7 +37,10 @@ export function PaymentCard({ card }: { card: Card }) {
         <Ionicons name={card.type === 'credit' ? 'card' : 'wallet'} size={layout.iconSize + spacing.xxs} color={colors.onPrimary} />
       </View>
 
-      <Text style={styles.number}>{maskCard(card.last4)}</Text>
+      <View style={styles.numbers}>
+        <Text style={styles.number}>{maskCard(card.last4)}</Text>
+        {!!card.accountLast4 && <Text style={styles.meta}>Account {maskCard(card.accountLast4)}</Text>}
+      </View>
 
       <View style={styles.bottom}>
         <Text style={styles.meta}>{card.annualFee > 0 ? `${formatMoney(card.annualFee)}/yr fee` : 'No annual fee'}</Text>
@@ -59,6 +62,7 @@ const styles = StyleSheet.create({
   titles: { flex: 1, gap: spacing.xxs },
   nickname: { ...typography.heading, color: colors.onPrimary },
   institution: { ...typography.small, color: colors.onPrimary, opacity: 0.8 },
+  numbers: { gap: spacing.xxs },
   number: {
     fontFamily: fontFamily.mono,
     fontSize: fontSize.xl,

@@ -30,6 +30,8 @@ export type Card = {
   nickname: string;
   /** Last 4 digits only. Full card numbers are never stored. */
   last4: string;
+  /** Last 4 digits of the bank account the card belongs to, if the user gave it. Never the full number. */
+  accountLast4?: string;
   annualFee: number;
   /** APR in percent; 0 for debit. */
   interestRate: number;
@@ -93,7 +95,7 @@ export type ChatMessage = {
 // ---- API shapes (computed, not stored) ----
 
 export type DateRange = { from: ISODate; to: ISODate };
-export type RangePreset = 'this-month' | 'last-month' | 'last-3-months' | 'year-to-date';
+export type RangePreset = 'this-month' | 'last-month' | 'last-3-months' | 'last-6-months' | 'year-to-date';
 
 export type TransactionFilters = {
   from?: ISODate;

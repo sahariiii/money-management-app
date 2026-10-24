@@ -16,11 +16,15 @@ demo exists only in mock mode.
 - Expo + Expo Router + TypeScript. Must run on Android (Expo Go) AND web.
 - Install Expo packages with `npx expo install`, never plain `npm install`, so versions match the SDK.
 - Styling: plain StyleSheet using tokens from src/constants/theme.ts. No hardcoded colors or spacing in screens.
-- All data access goes through src/lib/api.ts. With EXPO_PUBLIC_API_URL set (.env.local) it calls the
+- One env file for the whole project: `.env` in the repo root (git-ignored), read by Expo and by the
+  backend (personal_banker/__init__.py loads it). `.env.example` lists every variable; keep it in sync
+  when adding one. No backend/.env or .env.local. Only `EXPO_PUBLIC_*` vars reach the app bundle, so
+  backend secrets must never get that prefix.
+- All data access goes through src/lib/api.ts. With EXPO_PUBLIC_API_URL set (.env) it calls the
   backend; without it, it serves mock data from src/data/mock.ts. Screens never import mock data directly.
 - Backend Python uses uv (`uv add`, `uv run`), never pip.
 - Every screen must work at phone width and on a wide desktop browser (content max width ~900px, centered).
-- Never store or display full card numbers: last 4 digits only.
+- Never store or display full card or account numbers: last 4 digits only (`last4`, `accountLast4`).
 - After each change, run `npx tsc --noEmit` and fix all errors.
 
 ## Layout
@@ -80,7 +84,8 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
   edits first/last name with `user.update()`. Sign out: `useClerk().signOut()`.
 - Backend calls: `apiFetch()` in api.ts sends `Authorization: Bearer <Clerk session token>`
   (`getAuthToken()` via `getClerkInstance()`). Never send a user ID: the backend verifies the token
-  (backend/personal_banker/auth.py, using CLERK_PUBLISHABLE_KEY in backend/.env) and takes the user from it.
+  (backend/personal_banker/auth.py, using the same EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY from .env; a
+  CLERK_PUBLISHABLE_KEY env var overrides it) and takes the user from it.
 
 ## Gotchas
 - Clerk dashboard settings matter (instance logical-sole-3210, dev): phone number and username are
@@ -88,13 +93,15 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
   makes sign-up end in a "missing fields" message. Passwords need 15+ characters on this instance.
   Google in Expo Go only creates a session if the redirect URL (`exp://<LAN-IP>:8081/--/sso-callback`,
   logged in the Metro console in dev) is allowlisted under Native applications.
-- The backend needs CLERK_PUBLISHABLE_KEY in backend/.env (same value as the app's
-  EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY) to accept the app's requests. PERSONAL_BANKER_API_TOKEN there is
-  an optional static token for curl and scripts. Restart `npx expo start` after creating .env or
-  .env.local; a running server doesn't pick up a new file.
+- The backend accepts the app's requests only if it sees EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY (root .env).
+  PERSONAL_BANKER_API_TOKEN there is an optional static token for curl and scripts. Restart both
+  `npx expo start` and uvicorn after editing .env; running servers don't pick up changes.
 - On a phone, api.ts swaps localhost in EXPO_PUBLIC_API_URL for Metro's host (from
   Constants.expoConfig.hostUri). Windows Firewall must allow inbound port 8000.
-- `uv add` and `uv sync` without `--extra paddle` uninstall PaddleOCR-VL. Run `uv sync --extra paddle` after.
+- Statement extraction uses Claude by default; PERSONAL_BANKER_EXTRACTION_ENGINE=paddleocr-vl in .env switches
+  to the local (much slower) PaddleOCR-VL. Results are stored per engine; budget.json isn't.
+- `uv add` and `uv sync` without `--extra paddle` uninstall PaddleOCR-VL. Run `uv sync --extra paddle` after
+  (only matters if you use that engine).
 - Typed routes (.expo/types/router.d.ts) can go stale while the dev server runs on Windows:
   new non-route files under src/ show up as routes like `/../lib/api` and tsc rejects real hrefs.
   Fix: stop the server, delete .expo/types, restart `npx expo start`.

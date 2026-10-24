@@ -1,8 +1,9 @@
 """Orchestrates the per-page passes: render -> (layout -> transcription) for each page."""
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, get_args
 
 import anthropic
 import braintrust
@@ -21,9 +22,12 @@ DEFAULT_CONCURRENCY = 4
 Engine = Literal["claude", "paddleocr-vl"]
 ENGINE_LABELS: dict[Engine, str] = {"claude": "Claude", "paddleocr-vl": "PaddleOCR-VL (local)"}
 
-# The engine the app, the CLI and the library use. Change it here to switch;
-# "paddleocr-vl" needs `uv sync --extra paddle`.
-EXTRACTION_ENGINE: Engine = "paddleocr-vl"
+# The engine the app, the CLI and the library use: PERSONAL_BANKER_EXTRACTION_ENGINE in the
+# root .env, Claude by default. "paddleocr-vl" needs `uv sync --extra paddle`.
+ENGINE_ENV = "PERSONAL_BANKER_EXTRACTION_ENGINE"
+EXTRACTION_ENGINE: Engine = os.environ.get(ENGINE_ENV) or "claude"  # type: ignore[assignment]
+if EXTRACTION_ENGINE not in get_args(Engine):
+    raise ValueError(f"{ENGINE_ENV}={EXTRACTION_ENGINE!r}: use one of {', '.join(get_args(Engine))}.")
 
 
 @dataclass

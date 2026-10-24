@@ -23,7 +23,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("pdf", type=Path)
     parser.add_argument("--library", type=Path, default=DEFAULT_ROOT, help="Library folder (default: %(default)s).")
-    parser.add_argument("--engine", choices=get_args(Engine), default=EXTRACTION_ENGINE, help="Extraction engine (default: %(default)s, set by EXTRACTION_ENGINE in docai/pipeline.py).")
+    parser.add_argument("--engine", choices=get_args(Engine), default=EXTRACTION_ENGINE, help="Extraction engine (default: %(default)s, set by PERSONAL_BANKER_EXTRACTION_ENGINE in .env).")
     parser.add_argument("--concurrency", type=int, help="Pages processed in parallel (default: 4 for Claude, 1 for PaddleOCR-VL).")
     args = parser.parse_args()
 

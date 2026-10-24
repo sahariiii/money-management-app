@@ -15,6 +15,7 @@ const RANGES: { key: RangePreset; label: string }[] = [
   { key: 'this-month', label: 'This month' },
   { key: 'last-month', label: 'Last month' },
   { key: 'last-3-months', label: 'Last 3 months' },
+  { key: 'last-6-months', label: 'Last 6 months' },
 ];
 
 /**

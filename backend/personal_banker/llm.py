@@ -8,9 +8,6 @@ from dataclasses import dataclass
 import anthropic
 import braintrust
 from pydantic import BaseModel
-from dotenv import load_dotenv
-
-load_dotenv()
 
 BRAINTRUST_PROJECT = os.environ.get("BRAINTRUST_PROJECT", "Personal Banker")
 

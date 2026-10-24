@@ -21,7 +21,7 @@ def get_client() -> anthropic.Anthropic:
         api_key = st.secrets.get("ANTHROPIC_API_KEY")
     except FileNotFoundError:
         api_key = None
-    # Falls back to ANTHROPIC_API_KEY in the environment (or .env) when no secret is set.
+    # Falls back to ANTHROPIC_API_KEY in the environment (or the root .env) when no secret is set.
     return make_client(api_key)
 
 

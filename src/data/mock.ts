@@ -25,6 +25,7 @@ export const cards: Card[] = [
     type: 'debit',
     nickname: 'Everyday Debit',
     last4: '4821',
+    accountLast4: '0457',
     annualFee: 0,
     interestRate: 0,
     cycleDay: 1,

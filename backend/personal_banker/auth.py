@@ -2,8 +2,9 @@
 
 The app sends the signed-in user's Clerk session token, an RS256 JWT. It is
 checked against the public keys of the Clerk instance named in the publishable
-key (pk_test_<base64 of "<frontend API host>$">), so set CLERK_PUBLISHABLE_KEY
-in backend/.env to the app's EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY.
+key (pk_test_<base64 of "<frontend API host>$">): the app's
+EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY from the shared root .env. CLERK_PUBLISHABLE_KEY,
+when set, takes precedence (for running the backend without the app's .env).
 
 PERSONAL_BANKER_API_TOKEN, when set, is accepted too, for curl and scripts.
 CLERK_ALLOWED_USER_IDS (comma-separated Clerk user ids) limits the API to those
@@ -20,6 +21,7 @@ import secrets
 import jwt
 
 CLERK_KEY_ENV = "CLERK_PUBLISHABLE_KEY"
+APP_CLERK_KEY_ENV = "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY"
 TOKEN_ENV = "PERSONAL_BANKER_API_TOKEN"
 ALLOWED_USERS_ENV = "CLERK_ALLOWED_USER_IDS"
 
@@ -65,8 +67,12 @@ def verify_session_token(token: str, publishable_key: str) -> dict:
     return claims
 
 
+def publishable_key() -> str | None:
+    return os.environ.get(CLERK_KEY_ENV) or os.environ.get(APP_CLERK_KEY_ENV)
+
+
 def is_open() -> bool:
-    return not os.environ.get(CLERK_KEY_ENV) and not os.environ.get(TOKEN_ENV)
+    return not publishable_key() and not os.environ.get(TOKEN_ENV)
 
 
 def authorize(token: str | None) -> str:
@@ -78,10 +84,10 @@ def authorize(token: str | None) -> str:
     static = os.environ.get(TOKEN_ENV)
     if static and secrets.compare_digest(token.encode(), static.encode()):
         return "api-token"
-    if not (publishable_key := os.environ.get(CLERK_KEY_ENV)):
+    if not (key := publishable_key()):
         raise AuthError(401, "Wrong API token.")
     try:
-        user_id = verify_session_token(token, publishable_key)["sub"]
+        user_id = verify_session_token(token, key)["sub"]
     except jwt.PyJWTError as e:  # includes failing to fetch the keys
         raise AuthError(401, f"Invalid session token: {e}") from e
     allowed = {u.strip() for u in os.environ.get(ALLOWED_USERS_ENV, "").split(",") if u.strip()}

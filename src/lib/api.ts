@@ -1,6 +1,6 @@
 // The only data access layer for screens.
 //
-// With EXPO_PUBLIC_API_URL set (see .env.local), transactions, cards and
+// With EXPO_PUBLIC_API_URL set (in the root .env), transactions, cards and
 // statements come from the FastAPI backend in backend/, and each request
 // carries the signed-in user's Clerk session token. What the backend doesn't
 // store yet (budgets, bills, alerts, card reward rules, the assistant) starts
@@ -215,6 +215,8 @@ export function resolveRange(range: RangePreset | DateRange): DateRange {
     }
     case 'last-3-months':
       return { from: `${shiftMonth(month, -2)}-01`, to: today() };
+    case 'last-6-months':
+      return { from: `${shiftMonth(month, -5)}-01`, to: today() };
     case 'year-to-date':
       return { from: `${today().slice(0, 4)}-01-01`, to: today() };
   }
@@ -245,7 +247,13 @@ export async function addCard(input: NewCardInput): Promise<Card> {
   await delay(500);
   const { rules, ...fields } = input;
   // Only ever keep the last 4 digits, whatever the caller passes.
-  const card: Card = { ...fields, id: `card_${Date.now()}`, last4: fields.last4.replace(/\D/g, '').slice(-4) };
+  const last4 = (digits: string) => digits.replace(/\D/g, '').slice(-4);
+  const card: Card = {
+    ...fields,
+    id: `card_${Date.now()}`,
+    last4: last4(fields.last4),
+    accountLast4: last4(fields.accountLast4 ?? '') || undefined,
+  };
   db.cards.push(card);
   db.rewardRules.push(...rules.map((r) => ({ ...r, cardId: card.id })));
   return clone(card);
@@ -742,7 +750,7 @@ export async function sendChatMessage(text: string): Promise<ChatMessage> {
 // ---------------------------------------------------------------------------
 // Statements and receipts
 
-const NEEDS_BACKEND = 'Statements need the backend: set EXPO_PUBLIC_API_URL in .env.local.';
+const NEEDS_BACKEND = 'Statements need the backend: set EXPO_PUBLIC_API_URL in .env.';
 /** How long uploadStatement waits for the backend to read a statement, and how often it checks. */
 const UPLOAD_TIMEOUT_MS = 20 * 60_000;
 const POLL_MS = 2000;
