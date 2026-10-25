@@ -17,8 +17,12 @@ const ICONS: Record<Category, IconName> = {
   'Phone & Internet': 'wifi-outline',
   Utilities: 'flash-outline',
   Housing: 'home-outline',
-  Income: 'cash-outline',
   Other: 'pricetag-outline',
+  Work: 'briefcase-outline',
+  'Tax refund': 'receipt-outline',
+  'Side income': 'trending-up-outline',
+  Reimbursement: 'return-down-back-outline',
+  'Other income': 'cash-outline',
 };
 
 export const categoryIcon = (c: Category): IconName => ICONS[c];

@@ -21,13 +21,20 @@ import { borderWidth, colors, layout, radius, spacing, typography } from '@/cons
 import { useAsync } from '@/hooks/use-async';
 import { useLayout } from '@/hooks/use-layout';
 import { addExpense, ApiError, attachReceipt, getCards, scanReceipt, today } from '@/lib/api';
-import { formatShortDate } from '@/lib/dates';
+import { formatShortDate, isISODate } from '@/lib/dates';
 import { formatMoney, maskCard } from '@/lib/format';
-import { CASH_CARD_ID, CATEGORIES, type Card as CardType, type Category, type PickedFile, type ReceiptScan, type Transaction } from '@/types';
+import {
+  CASH_CARD_ID,
+  EXPENSE_CATEGORIES,
+  type Card as CardType,
+  type Category,
+  type PickedFile,
+  type ReceiptScan,
+  type Transaction,
+} from '@/types';
 
 type Photo = PickedFile & { width: number; height: number };
 const isWeb = Platform.OS === 'web';
-const EXPENSE_CATEGORIES = CATEGORIES.filter((c) => c !== 'Income');
 
 const errorMessage = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
@@ -47,7 +54,7 @@ function AddExpense({ scan, cards, onAdded }: { scan: ReceiptScan; cards: CardTy
     const value = Number(amount.replace(',', '.'));
     const e: typeof errors = {};
     if (!merchant.trim()) e.merchant = 'Where was it bought?';
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date))) e.date = 'Use YYYY-MM-DD, e.g. 2026-10-23.';
+    if (!isISODate(date)) e.date = 'Use YYYY-MM-DD, e.g. 2026-10-23.';
     if (!(value > 0)) e.amount = 'Enter the amount paid.';
     setErrors(e);
     if (Object.keys(e).length) return;

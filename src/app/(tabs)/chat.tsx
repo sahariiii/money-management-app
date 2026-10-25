@@ -1,19 +1,16 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useNavigation } from 'expo-router';
 import { useHeaderHeight } from 'expo-router/react-navigation';
-import { useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { FlatList, KeyboardAvoidingView, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { Chip, Loading, Screen, TypingDots } from '@/components';
+import { AlertBanner, Button, Chip, EmptyState, Loading, Screen, TypingDots, useToast } from '@/components';
 import { borderWidth, colors, fontSize, layout, radius, spacing, typography } from '@/constants/theme';
 import { useAsync } from '@/hooks/use-async';
-import { getChatHistory, sendChatMessage } from '@/lib/api';
+import { CHAT_SUGGESTIONS, clearChat, getChatHistory, sendChatMessage, USE_MOCK } from '@/lib/api';
 import type { ChatMessage } from '@/types';
 
-const SUGGESTIONS = [
-  'Am I on track this month?',
-  'How much on restaurants since July?',
-  'Which card should I use for groceries?',
-];
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 function Bubble({ message }: { message: ChatMessage }) {
   const mine = message.role === 'user';
@@ -39,10 +36,12 @@ function Welcome({ onPick }: { onPick: (q: string) => void }) {
       </View>
       <Text style={styles.welcomeTitle}>Ask me about your money</Text>
       <Text style={styles.welcomeText}>
-        I know your transactions, budgets and cards, and I remember your habits over time.
+        {USE_MOCK
+          ? 'I know your transactions, budgets and cards, and I remember your habits over time.'
+          : 'I can look through your statements and receipts: spending by month, card, category or merchant, and what stands out.'}
       </Text>
       <View style={styles.suggestions}>
-        {SUGGESTIONS.map((q) => (
+        {CHAT_SUGGESTIONS.map((q) => (
           <Chip key={q} label={q} onPress={() => onPick(q)} />
         ))}
       </View>
@@ -52,31 +51,76 @@ function Welcome({ onPick }: { onPick: (q: string) => void }) {
 
 export default function Chat() {
   const headerHeight = useHeaderHeight();
+  const navigation = useNavigation();
+  const toast = useToast();
   const history = useAsync(getChatHistory);
   // Local list once the user starts chatting; history seeds it after tab switches.
   const [local, setLocal] = useState<ChatMessage[] | null>(null);
   const [draft, setDraft] = useState('');
   const [typing, setTyping] = useState(false);
+  // The last question when its answer failed; it stays in the list so it can be sent again.
+  const [failed, setFailed] = useState<{ question: string; error: string } | null>(null);
   const listRef = useRef<FlatList<ChatMessage>>(null);
 
   const messages = local ?? history.data ?? [];
 
-  async function send(text: string) {
-    const q = text.trim();
-    if (!q || typing) return;
-    setDraft('');
-    const mine: ChatMessage = { id: `local_${Date.now()}`, role: 'user', text: q, createdAt: new Date().toISOString() };
-    setLocal([...messages, mine]);
+  async function ask(q: string) {
+    setFailed(null);
     setTyping(true);
     try {
       const reply = await sendChatMessage(q);
       setLocal((m) => [...(m ?? []), reply]);
+    } catch (e) {
+      setFailed({ question: q, error: errorText(e) });
     } finally {
       setTyping(false);
     }
   }
 
+  function send(text: string) {
+    const q = text.trim();
+    if (!q || typing) return;
+    setDraft('');
+    const mine: ChatMessage = { id: `local_${Date.now()}`, role: 'user', text: q, createdAt: new Date().toISOString() };
+    setLocal([...messages, mine]);
+    void ask(q);
+  }
+
   const canSend = draft.trim().length > 0 && !typing;
+  const canClear = messages.length > 0 && !typing;
+
+  useLayoutEffect(() => {
+    async function startOver() {
+      try {
+        await clearChat();
+        setLocal([]);
+        setFailed(null);
+      } catch (e) {
+        toast(`Couldn't clear the chat: ${errorText(e)}`);
+      }
+    }
+    navigation.setOptions({
+      headerRight: canClear
+        ? () => (
+            <Button label="New chat" icon="create-outline" variant="ghost" size="sm" style={styles.headerAction} onPress={startOver} />
+          )
+        : undefined,
+    });
+  }, [navigation, canClear, toast]);
+
+  const empty = history.data ? (
+    <Welcome onPick={send} />
+  ) : history.error ? (
+    <EmptyState
+      icon="cloud-offline-outline"
+      title="Couldn't load the conversation"
+      message={errorText(history.error)}
+      actionLabel="Try again"
+      onAction={history.reload}
+    />
+  ) : (
+    <Loading />
+  );
 
   return (
     // "padding" on Android too: with edge-to-edge (SDK 54+) the window no longer resizes for the keyboard.
@@ -89,12 +133,24 @@ export default function Chat() {
           data={messages}
           keyExtractor={(m) => m.id}
           renderItem={({ item }) => <Bubble message={item} />}
-          ListEmptyComponent={history.data ? <Welcome onPick={send} /> : <Loading />}
+          ListEmptyComponent={empty}
           ListFooterComponent={
             typing ? (
-              <View style={[styles.bubble, styles.theirs]}>
+              <View style={[styles.bubble, styles.theirs, !USE_MOCK && styles.thinking]}>
                 <TypingDots />
+                {/* With the backend an answer can take half a minute; say what's going on. */}
+                {!USE_MOCK && <Text style={styles.thinkingText}>Looking through your transactions…</Text>}
               </View>
+            ) : failed ? (
+              <AlertBanner
+                tone="danger"
+                title="No answer this time"
+                message={failed.error}
+                actions={[
+                  { label: 'Try again', onPress: () => void ask(failed.question) },
+                  { label: 'Dismiss', onPress: () => setFailed(null) },
+                ]}
+              />
             ) : undefined
           }
           onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
@@ -147,6 +203,9 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderBottomLeftRadius: radius.sm,
   },
+  thinking: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  thinkingText: typography.caption,
+  headerAction: { marginRight: spacing.sm },
   bubbleText: typography.body,
   mineText: { color: colors.onPrimary },
   summary: {

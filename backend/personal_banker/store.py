@@ -17,6 +17,7 @@
       receipts.json            expenses added from scanned receipts in the mobile app
       receipts/<scan id>.jpg   a scanned receipt's photo (upright, at most 1568 px)
       receipts/<scan id>.json  what was read from it, and the transaction it belongs to
+      chat.json                the conversation with the app's assistant
 
 The folder is configurable with PERSONAL_BANKER_LIBRARY and is git-ignored.
 """
@@ -264,3 +265,13 @@ class Library:
     def delete_scan(self, scan_id: str) -> None:
         for suffix in (".json", ".jpg"):
             (self.root / "receipts" / f"{scan_id}{suffix}").unlink(missing_ok=True)
+
+    # --- Assistant chat ------------------------------------------------------------------
+
+    def chat(self) -> list[dict]:
+        """The assistant conversation as the app shows it, oldest first (see assistant.py)."""
+        path = self.root / "chat.json"
+        return json.loads(path.read_text(encoding="utf-8"))["messages"] if path.exists() else []
+
+    def save_chat(self, messages: list[dict]) -> None:
+        _write_json(self.root / "chat.json", {"messages": messages})

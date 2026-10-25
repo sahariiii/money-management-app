@@ -12,9 +12,11 @@ type Props = {
   horizontal?: boolean;
   /** Categories beyond this are folded into one "Everything else" slice. */
   maxSlices?: number;
+  /** Under the total in the middle, e.g. "spent" or "earned". */
+  centerLabel?: string;
 };
 
-export function CategoryDonut({ data, horizontal = false, maxSlices = 6 }: Props) {
+export function CategoryDonut({ data, horizontal = false, maxSlices = 6, centerLabel = 'spent' }: Props) {
   const total = data.reduce((s, c) => s + c.amount, 0);
   const top = data.slice(0, maxSlices);
   const rest = data.slice(maxSlices).reduce((s, c) => s + c.amount, 0);
@@ -34,7 +36,7 @@ export function CategoryDonut({ data, horizontal = false, maxSlices = 6 }: Props
         centerLabelComponent={() => (
           <View style={styles.center}>
             <Text style={styles.centerValue}>{formatMoney(total)}</Text>
-            <Text style={styles.centerLabel}>spent</Text>
+            <Text style={styles.centerLabel}>{centerLabel}</Text>
           </View>
         )}
       />

@@ -113,7 +113,14 @@ export default function Home() {
             style={{ width: tileWidth }}
             label="Income"
             value={formatMoney(s.totalIncome)}
-            caption="Paycheques and deposits"
+            caption={
+              s.incomeByCategory.length
+                ? s.incomeByCategory
+                    .slice(0, 2)
+                    .map((c) => `${c.category} ${formatMoney(c.amount)}`)
+                    .join(' · ')
+                : 'No money in yet'
+            }
             icon="arrow-down-circle-outline"
             tone="income"
           />
@@ -141,6 +148,16 @@ export default function Home() {
           )}
         </Card>
         <Card style={{ width: half }}>
+          <SectionHeader title="Income by category" subtitle={formatMonth(month)} />
+          {!s ? (
+            <Loading />
+          ) : s.incomeByCategory.length === 0 ? (
+            <EmptyState compact icon="pie-chart-outline" title="No income yet" message="Money coming in this month shows up here." />
+          ) : (
+            <CategoryDonut data={s.incomeByCategory} centerLabel="earned" horizontal={!isWide && chartWidth > 420} />
+          )}
+        </Card>
+        <Card style={{ width: contentWidth }}>
           <SectionHeader title="Weekly spending" subtitle="Last 3 months, excluding rent" />
           {!weekly.data ? (
             <Loading />
@@ -149,7 +166,7 @@ export default function Home() {
           ) : (
             <WeeklySpendChart
               data={weekly.data}
-              width={chartWidth}
+              width={contentWidth - spacing.lg * 2}
               height={isWide ? layout.chartHeightWide : layout.chartHeight}
             />
           )}

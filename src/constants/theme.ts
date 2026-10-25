@@ -32,8 +32,13 @@ export const categoryColors = {
   'Phone & Internet': '#14B8A6',
   Utilities: '#64748B',
   Housing: '#334155',
-  Income: '#22C55E',
   Other: '#94A3B8',
+  // Income: greens and teals, shown apart from spending.
+  Work: '#22C55E',
+  'Tax refund': '#0D9488',
+  'Side income': '#65A30D',
+  Reimbursement: '#0891B2',
+  'Other income': '#4D7C0F',
 } as const;
 
 /** Gradients for the payment-card visuals, picked by card type. */

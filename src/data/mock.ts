@@ -173,7 +173,7 @@ function buildTransactions(): Transaction[] {
       amount: 2412.55,
       rawDescription: 'PAYROLL DEP NORTHWIND TECH INC',
       merchant: 'Northwind Tech',
-      category: 'Income',
+      category: 'Work',
       cardId: DEBIT,
       isIncome: true,
     });

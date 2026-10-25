@@ -26,8 +26,9 @@ import anthropic
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import Field
 
-from . import auth, ledger, receipts, service
+from . import assistant, auth, ledger, receipts, service
 from .docai import render_pdf
 from .docai.pipeline import EXTRACTION_ENGINE
 from .ledger import AppCategory, AppModel, Card, CardInput, CategoryUpdate, RewardRule, Transaction
@@ -403,11 +404,48 @@ def scan_receipt(image: UploadFile) -> ReceiptScan:
     }
     return ReceiptScan(
         **read,
-        category="Other" if data.category == "Income" else data.category,
+        category=data.category,
         card_id=card.id if card else None,
         matched_transaction=ledger.find_match(ledger.transactions(library), data.total, day, card.id if card else None),
         receipt_id=ledger.save_scan(library, read, photo),
     )
+
+
+# ---------------------------------------------------------------------------
+# Assistant
+
+
+class ChatQuestion(AppModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+@api.get("/chat")
+def get_chat() -> list[assistant.ChatMessage]:
+    """The conversation, oldest first."""
+    return assistant.history(library)
+
+
+@api.post("/chat")
+def send_chat(question: ChatQuestion) -> assistant.ChatMessage:
+    """Asks the assistant; returns its answer once Claude is done, which can take a while. Both are saved."""
+    if not has_api_key():
+        raise HTTPException(503, "The assistant uses Claude, and no Anthropic API key is set on the server.")
+    with start_trace("chat", input={"question": question.text}) as trace:
+        try:
+            reply = assistant.ask(make_client(), library, question.text.strip())
+        except assistant.AssistantError as e:
+            raise HTTPException(422, str(e)) from e
+        except anthropic.APIError as e:
+            log.exception("The assistant's Claude call failed")
+            raise HTTPException(502, f"The assistant couldn't reach Claude: {e}") from e
+        trace.log(output={"text": reply.text, "summary": reply.summary.model_dump() if reply.summary else None})
+    return reply
+
+
+@api.delete("/chat", status_code=204)
+def clear_chat() -> Response:
+    assistant.clear(library)
+    return Response(status_code=204)
 
 
 def _document(doc_id: str) -> StoredDocument:

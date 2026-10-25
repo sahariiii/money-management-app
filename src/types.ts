@@ -1,7 +1,7 @@
 // Domain types. These mirror the future SurrealDB tables so lib/api.ts can be
 // swapped to real fetch calls without touching screens.
 
-export const CATEGORIES = [
+export const EXPENSE_CATEGORIES = [
   'Groceries',
   'Food', // restaurants, cafés, takeout and delivery
   'Transport',
@@ -12,11 +12,18 @@ export const CATEGORIES = [
   'Phone & Internet',
   'Utilities',
   'Housing',
-  'Income',
   'Other',
 ] as const;
 
+/** Where money comes from. Refunds keep the spending category they came back to. */
+export const INCOME_CATEGORIES = ['Work', 'Tax refund', 'Side income', 'Reimbursement', 'Other income'] as const;
+
+export const CATEGORIES = [...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES] as const;
+
 export type Category = (typeof CATEGORIES)[number];
+export type IncomeCategory = (typeof INCOME_CATEGORIES)[number];
+
+export const isIncomeCategory = (c: Category): c is IncomeCategory => (INCOME_CATEGORIES as readonly Category[]).includes(c);
 
 /** ISO date, YYYY-MM-DD. */
 export type ISODate = string;
@@ -129,7 +136,10 @@ export type SpendSummary = {
   totalIncome: number;
   net: number;
   transactionCount: number;
+  /** Spending by category. */
   byCategory: CategorySpend[];
+  /** Money in by category (share is of totalIncome), largest first. */
+  incomeByCategory: CategorySpend[];
   byMonth: MonthTotals[];
   topMerchants: MerchantSpend[];
 };

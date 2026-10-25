@@ -7,7 +7,7 @@ import { borderWidth, colors, layout, spacing, typography } from '@/constants/th
 import { useLayout } from '@/hooks/use-layout';
 import { categoryColor, categoryIcon } from '@/lib/categories';
 import { maskCard } from '@/lib/format';
-import { CATEGORIES, type Card as CardType, type Category, type NewCardInput, type RewardRule } from '@/types';
+import { EXPENSE_CATEGORIES, type Card as CardType, type Category, type NewCardInput, type RewardRule } from '@/types';
 
 import { AlertBanner } from './AlertBanner';
 import { Button } from './Button';
@@ -20,7 +20,7 @@ type BonusRule = { category: Category; rate: string; cap: string };
 type Errors = Partial<Record<string, string>>;
 
 /** Categories you can earn a bonus on (not income or rent). */
-const BONUS_CATEGORIES = CATEGORIES.filter((c) => c !== 'Income' && c !== 'Housing');
+const BONUS_CATEGORIES = EXPENSE_CATEGORIES.filter((c) => c !== 'Housing');
 
 const num = (s: string) => (s.trim() === '' ? NaN : Number(s.replace(',', '.')));
 const digits4 = (v: string) => v.replace(/\D/g, '').slice(-4);

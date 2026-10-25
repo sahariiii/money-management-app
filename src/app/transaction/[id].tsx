@@ -20,10 +20,10 @@ import {
 } from '@/components';
 import { colors, fontFamily, fontSize, fontWeight, radius, spacing, typography } from '@/constants/theme';
 import { useAsync } from '@/hooks/use-async';
-import { deleteReceipt, deleteTransaction, getCards, getReceipt, getTransaction, updateCategory } from '@/lib/api';
+import { ApiError, deleteReceipt, deleteTransaction, getCards, getReceipt, getTransaction, updateCategory } from '@/lib/api';
 import { formatShortDate } from '@/lib/dates';
 import { formatMoney, maskCard } from '@/lib/format';
-import { CASH_CARD_ID, CATEGORIES, type Category } from '@/types';
+import { CASH_CARD_ID, EXPENSE_CATEGORIES, INCOME_CATEGORIES, type Category } from '@/types';
 
 export default function TransactionDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -35,6 +35,7 @@ export default function TransactionDetail() {
   const [pending, setPending] = useState<Category | null>(null);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -79,7 +80,8 @@ export default function TransactionDetail() {
       setDeleting(false);
     }
   };
-  const options = t.isIncome ? CATEGORIES : CATEGORIES.filter((c) => c !== 'Income');
+  // Money in can be income or a refund, which keeps a spending category; money out is spending.
+  const options: readonly Category[] = t.isIncome ? [...INCOME_CATEGORIES, ...EXPENSE_CATEGORIES] : EXPENSE_CATEGORIES;
 
   const pick = (c: Category) => {
     setNotice(null);
@@ -89,6 +91,7 @@ export default function TransactionDetail() {
   const save = async (always: boolean) => {
     if (!pending) return;
     setSaving(true);
+    setSaveError(null);
     try {
       const res = await updateCategory(t.id, pending, always);
       tx.setData(res.transaction);
@@ -98,6 +101,16 @@ export default function TransactionDetail() {
           : `Changed to ${pending} for this transaction only.`,
       );
       setPending(null);
+    } catch (e) {
+      // e.g. a backend started before this category existed answers 422.
+      const status = e instanceof ApiError ? e.status : 0;
+      setSaveError(
+        status === 422
+          ? `The server doesn't accept "${pending}" yet. Restart the backend and try again.`
+          : e instanceof Error
+            ? e.message
+            : "Couldn't change the category. Try again.",
+      );
     } finally {
       setSaving(false);
     }
@@ -182,6 +195,7 @@ export default function TransactionDetail() {
         )}
 
         {notice && <AlertBanner tone="success" title={notice} />}
+        {saveError && <AlertBanner tone="danger" title={saveError} />}
       </Card>
 
       {fromReceipt && (

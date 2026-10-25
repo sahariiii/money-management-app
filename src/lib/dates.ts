@@ -14,6 +14,11 @@ export function addDays(date: ISODate, days: number): ISODate {
   return new Date(toUtc(date) + days * DAY_MS).toISOString().slice(0, 10);
 }
 
+/** A real YYYY-MM-DD date (rejects e.g. 2026-02-30, which Date.parse rolls over). */
+export function isISODate(value: string): value is ISODate {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(toUtc(value)) && addDays(value, 0) === value;
+}
+
 /** Whole days from `from` to `to` (negative if `to` is earlier). */
 export function daysFrom(from: ISODate, to: ISODate): number {
   return Math.round((toUtc(to) - toUtc(from)) / DAY_MS);

@@ -2,14 +2,22 @@ import { router } from 'expo-router';
 import { Fragment, useState, type ReactNode } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { AlertBanner, Card, Chip, Divider, EmptyState, Loading, Screen, TransactionRow } from '@/components';
+import { AlertBanner, Card, Chip, Divider, EmptyState, Loading, Screen, TextField, TransactionRow } from '@/components';
 import { colors, fontWeight, layout, spacing, typography } from '@/constants/theme';
 import { useAsync } from '@/hooks/use-async';
 import { useLayout } from '@/hooks/use-layout';
 import { getCards, getStatements, getTransactions, resolveRange, today } from '@/lib/api';
-import { addDays, formatShortDate } from '@/lib/dates';
+import { addDays, formatShortDate, isISODate } from '@/lib/dates';
 import { formatMoney, maskCard } from '@/lib/format';
-import { CASH_CARD_ID, CATEGORIES, type Category, type RangePreset, type Statement, type Transaction } from '@/types';
+import {
+  CASH_CARD_ID,
+  CATEGORIES,
+  type Category,
+  type DateRange,
+  type RangePreset,
+  type Statement,
+  type Transaction,
+} from '@/types';
 
 const RANGES: { key: RangePreset; label: string }[] = [
   { key: 'this-month', label: 'This month' },
@@ -17,6 +25,41 @@ const RANGES: { key: RangePreset; label: string }[] = [
   { key: 'last-3-months', label: 'Last 3 months' },
   { key: 'last-6-months', label: 'Last 6 months' },
 ];
+
+/** Errors only once a date is fully typed, so half-typed ones aren't flagged. */
+function dateError(value: string) {
+  return value.length >= 10 && !isISODate(value) ? 'Use YYYY-MM-DD.' : undefined;
+}
+
+/**
+ * From/To fields for a custom range. Calls onChange whenever both dates are
+ * valid and in order; until then the list keeps the last valid range.
+ */
+function CustomRange({ initial, onChange }: { initial: DateRange; onChange: (range: DateRange) => void }) {
+  const [from, setFrom] = useState<string>(initial.from);
+  const [to, setTo] = useState<string>(initial.to);
+
+  function update(nextFrom: string, nextTo: string) {
+    setFrom(nextFrom);
+    setTo(nextTo);
+    if (isISODate(nextFrom) && isISODate(nextTo) && nextFrom <= nextTo) onChange({ from: nextFrom, to: nextTo });
+  }
+
+  const outOfOrder = isISODate(from) && isISODate(to) && to < from;
+  const field = { placeholder: 'YYYY-MM-DD', maxLength: 10, keyboardType: 'numbers-and-punctuation' as const, style: styles.flex };
+  return (
+    <View style={styles.customRange}>
+      <TextField {...field} label="From" value={from} onChangeText={(v) => update(v.trim(), to)} error={dateError(from)} />
+      <TextField
+        {...field}
+        label="To"
+        value={to}
+        onChangeText={(v) => update(from, v.trim())}
+        error={dateError(to) ?? (outOfOrder ? 'Must be on or after From.' : undefined)}
+      />
+    </View>
+  );
+}
 
 /**
  * A labelled row of chips. Phones swipe it sideways; wide screens wrap it onto
@@ -65,11 +108,18 @@ function dayLabel(date: string) {
 
 export default function Transactions() {
   const { isWide } = useLayout();
-  const [rangeKey, setRangeKey] = useState<RangePreset>('this-month');
+  const [rangeKey, setRangeKey] = useState<RangePreset | 'custom'>('this-month');
+  const [customRange, setCustomRange] = useState<DateRange>();
   const [cardId, setCardId] = useState<string>();
   const [category, setCategory] = useState<Category>();
 
-  const range = resolveRange(rangeKey);
+  const range = rangeKey === 'custom' && customRange ? customRange : resolveRange(rangeKey === 'custom' ? 'this-month' : rangeKey);
+
+  function pickCustom() {
+    // Start from whatever range is showing, so the fields are already filled in.
+    setCustomRange(range);
+    setRangeKey('custom');
+  }
   const filters = { from: range.from, to: range.to, cardId, category };
   const txs = useAsync(() => getTransactions(filters), JSON.stringify(filters));
   const cards = useAsync(getCards);
@@ -102,7 +152,9 @@ export default function Transactions() {
           {RANGES.map((r) => (
             <Chip key={r.key} label={r.label} selected={rangeKey === r.key} onPress={() => setRangeKey(r.key)} />
           ))}
+          <Chip label="Custom" selected={rangeKey === 'custom'} onPress={() => rangeKey !== 'custom' && pickCustom()} />
         </FilterRow>
+        {rangeKey === 'custom' && customRange && <CustomRange initial={customRange} onChange={setCustomRange} />}
         <FilterRow label="Card" wrap={isWide}>
           <Chip label="All cards" selected={!cardId} onPress={() => setCardId(undefined)} />
           {(cards.data ?? []).map((c) => (
@@ -189,6 +241,8 @@ const styles = StyleSheet.create({
   filterLabel: typography.overline,
   chips: { gap: spacing.sm, paddingRight: spacing.lg },
   chipsWrap: { flexDirection: 'row', flexWrap: 'wrap', paddingRight: 0 },
+  customRange: { flexDirection: 'row', gap: spacing.md },
+  flex: { flex: 1 },
   summary: typography.muted,
   expense: { color: colors.expense, fontWeight: fontWeight.semibold },
   income: { color: colors.income, fontWeight: fontWeight.semibold },

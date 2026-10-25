@@ -8,9 +8,9 @@ Clerk for auth, SurrealDB for the ledger, SurrealDB Agent Memory for long-term m
 
 Current phase: UI + real auth (Clerk) + the Python backend in backend/ (FastAPI over the file
 library the Streamlit pipeline writes; no database yet). Transactions, cards with their reward
-rules (add, edit, delete), statement upload and receipt scanning come from the backend; budgets,
-bills, alerts and chat aren't in the backend yet, so with it they start empty (additions last until
-reload) and the full demo exists only in mock mode.
+rules (add, edit, delete), statement upload, receipt scanning and the assistant chat come from the
+backend; budgets, bills and alerts aren't in the backend yet, so with it they start empty (additions
+last until reload) and the full demo exists only in mock mode.
 
 ## Rules
 - Expo + Expo Router + TypeScript. Must run on Android (Expo Go) AND web.
@@ -37,8 +37,13 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
   uploadStatement (always 40 latest rows, all already in ledger), scanReceipt (always matches
   the Gusto 101 transaction). With the backend, uploadStatement really uploads and waits for the
   backend to finish, scanReceipt sends the photo to POST /api/receipts/scan (Claude vision via
-  backend/personal_banker/receipts.py), and chat replies "not connected". Pickers
+  backend/personal_banker/receipts.py), and chat goes to POST /api/chat. Pickers
   (expo-document-picker / expo-image-picker) are real.
+- backend/personal_banker/assistant.py — the assistant: Claude (tool runner) with read-only tools over
+  ledger.transactions/cards (list_cards, spending_summary, find_transactions) plus show_headline, which
+  sets the reply's `summary` card. The conversation is library/chat.json (GET/POST/DELETE /api/chat);
+  earlier turns go back to Claude as plain text, without their tool calls. It doesn't know budgets or
+  bills (not in the backend). Replies are plain text (no Markdown): the chat bubble is a plain Text.
 - src/components/ — shared UI (Screen, Card, StatTile, ProgressBar, TransactionRow, AlertBanner,
   Chip, SectionHeader, EmptyState, AuthScreen, CodeForm, Avatar, CardForm: the add/edit card form).
   Import from `@/components`.
@@ -56,8 +61,11 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
 - backend/personal_banker/api.py — FastAPI app for the Expo app. Run from backend/:
   `uv run uvicorn personal_banker.api:app --host 0.0.0.0 --port 8000`. Models mirror src/types.ts.
 - backend/personal_banker/ledger.py — budget.json rows as app transactions. Rows keep workbook
-  categories (Streamlit and the workbook export need them); EXPENSE_CATEGORIES maps them onto the
-  app's CATEGORIES. App edits go in a row's `app_category`, "always" rules in library/merchant_rules.json.
+  categories (Streamlit and the workbook export need them); EXPENSE_CATEGORIES maps expense rows onto
+  the app's EXPENSE_CATEGORIES, INCOME_CATEGORY_MAP income rows onto INCOME_CATEGORIES (Work, Tax refund,
+  Side income, Reimbursement, Other income; workbook "Job…" = Work). There is no single "Income"
+  category: check `isIncome` for direction, `isIncomeCategory()` for the kind of category. Refunds are
+  isIncome with a spending category. App edits go in a row's `app_category`, "always" rules in library/merchant_rules.json.
   Refunds (negative expenses) become isIncome: true, since app amounts are always positive.
   Cards and reward rules live in library/cards.json. A statement's transactions go on the card whose
   `account_last4` equals the statement's (budget.json "account".last4, from the categorizer), worked

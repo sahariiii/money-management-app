@@ -12,7 +12,7 @@ import braintrust
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
-from .ledger import AppCategory
+from .ledger import ExpenseCategory
 from .llm import CallResult, image_block, run_structured
 
 # Claude scales larger images down to this anyway, so sending more only costs upload time.
@@ -46,7 +46,7 @@ class ReceiptData(BaseModel):
         description="The last 4 digits of the payment card number printed on the receipt (e.g. from "
         "'MASTERCARD ************1234'). Exactly those 4 digits, never more; null if paid in cash or not printed."
     )
-    category: AppCategory = Field(description="The budget category the purchase belongs in. Never 'Income'.")
+    category: ExpenseCategory = Field(description="The budget category the purchase belongs in.")
 
 
 class ReceiptError(ValueError):

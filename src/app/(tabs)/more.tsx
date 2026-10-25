@@ -35,7 +35,7 @@ import { categoryColor, categoryIcon } from '@/lib/categories';
 import { formatMonth, formatShortDate } from '@/lib/dates';
 import { authGlobalError } from '@/lib/auth';
 import { formatMoney } from '@/lib/format';
-import type { Category, RecurringBillStatus } from '@/types';
+import { isIncomeCategory, type Category, type RecurringBillStatus } from '@/types';
 
 const INTERVAL_LABEL: Record<RecurringBillStatus['interval'], string> = {
   weekly: 'Weekly',
@@ -297,7 +297,7 @@ export default function More() {
   // Closest to the limit first.
   const budgetList = [...(budgets.data ?? [])].sort((a, b) => b.ratio - a.ratio);
   const budgeted = new Set(budgetList.map((b) => b.category));
-  const unbudgeted = (spend.data?.byCategory ?? []).filter((c) => !budgeted.has(c.category) && c.category !== 'Income');
+  const unbudgeted = (spend.data?.byCategory ?? []).filter((c) => !budgeted.has(c.category) && !isIncomeCategory(c.category));
 
   const billList = bills.data ?? [];
   const monthlyBills = billList.filter((b) => b.interval === 'monthly').reduce((s, b) => s + b.expectedAmount, 0);

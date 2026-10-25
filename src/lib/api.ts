@@ -3,8 +3,9 @@
 // With EXPO_PUBLIC_API_URL set (in the root .env), transactions, cards and
 // statements come from the FastAPI backend in backend/, and each request
 // carries the signed-in user's Clerk session token. What the backend doesn't
-// store yet (budgets, bills, alerts, card reward rules, the assistant) starts
+// store yet (budgets, bills, alerts) starts
 // empty, and anything the user adds to it lasts until the app reloads.
+// The assistant is Claude on the backend, with the conversation saved there.
 // Without EXPO_PUBLIC_API_URL everything is mock data from an in-memory copy.
 // Summaries, budgets and the optimizer are computed here from the transactions either way.
 
@@ -23,6 +24,7 @@ import {
   transactions as seedTransactions,
 } from '@/data/mock';
 import { addDays, daysFrom, formatMonth, lastDayOf, shiftMonth, weekStart } from '@/lib/dates';
+import { INCOME_CATEGORIES } from '@/types';
 import { formatMoney } from '@/lib/format';
 import type {
   Alert,
@@ -373,6 +375,11 @@ function summarize(all: Transaction[], range: DateRange): SpendSummary {
     const m = byMerchant.get(t.merchant) ?? { amount: 0, count: 0 };
     byMerchant.set(t.merchant, { amount: m.amount + t.amount, count: m.count + 1 });
   }
+  const incomeByCat = new Map<Category, { amount: number; count: number }>();
+  for (const t of txs.filter((x) => x.isIncome)) {
+    const c = incomeByCat.get(t.category) ?? { amount: 0, count: 0 };
+    incomeByCat.set(t.category, { amount: c.amount + t.amount, count: c.count + 1 });
+  }
 
   const byMonthMap = new Map<YearMonth, MonthTotals>();
   for (const t of txs) {
@@ -392,6 +399,15 @@ function summarize(all: Transaction[], range: DateRange): SpendSummary {
     }))
     .sort((a, b) => b.amount - a.amount);
 
+  const incomeByCategory: CategorySpend[] = [...incomeByCat]
+    .map(([category, v]) => ({
+      category,
+      amount: round2(v.amount),
+      count: v.count,
+      share: totalIncome ? round2(v.amount / totalIncome) : 0,
+    }))
+    .sort((a, b) => b.amount - a.amount);
+
   const topMerchants: MerchantSpend[] = [...byMerchant]
     .map(([merchant, v]) => ({ merchant, amount: round2(v.amount), count: v.count }))
     .sort((a, b) => b.amount - a.amount)
@@ -408,6 +424,7 @@ function summarize(all: Transaction[], range: DateRange): SpendSummary {
     net: round2(totalIncome - totalSpent),
     transactionCount: txs.length,
     byCategory,
+    incomeByCategory,
     byMonth,
     topMerchants,
   };
@@ -524,7 +541,7 @@ export async function dismissAlert(id: string): Promise<Alert | null> {
 // Card rewards optimizer
 
 /** Categories that can't realistically go on a credit card. */
-const NOT_CARD_PAYABLE: Category[] = ['Housing', 'Income'];
+const NOT_CARD_PAYABLE: Category[] = ['Housing', ...INCOME_CATEGORIES];
 
 function ruleFor(rules: RewardRule[], cardId: string, category: Category) {
   const own = rules.filter((r) => r.cardId === cardId);
@@ -660,7 +677,9 @@ export async function getCardOptimizer(period: RangePreset | DateRange = 'last-3
 }
 
 // ---------------------------------------------------------------------------
-// Assistant (canned answers computed from the mock data until the agent backend exists)
+// Assistant. With the backend it is Claude with tools over the ledger
+// (backend/personal_banker/assistant.py), and the conversation is saved there.
+// Mock mode gives canned answers computed from the mock data.
 
 type Answer = Pick<ChatMessage, 'text' | 'summary'>;
 
@@ -766,27 +785,56 @@ const FALLBACK: Answer = {
     'Try "Am I on track this month?" or "How much on restaurants since July?"',
 };
 
-const NOT_CONNECTED: Answer = { text: "The assistant isn't connected to the backend yet." };
+/** Starter questions for an empty chat; mock mode only answers its canned ones. */
+export const CHAT_SUGGESTIONS = USE_MOCK
+  ? ['Am I on track this month?', 'How much on restaurants since July?', 'Which card should I use for groceries?']
+  : [
+      'How does this month compare to last month?',
+      'What did I spend on each card last month?',
+      'Where could I cut back?',
+    ];
 
+/** The conversation, oldest first. */
 export async function getChatHistory(): Promise<ChatMessage[]> {
+  if (!USE_MOCK) return apiFetch<ChatMessage[]>('/api/chat');
   await delay(150);
   return clone(db.chat);
 }
 
-/** Stores the user's message, then returns (and stores) the assistant's reply. */
+/**
+ * Stores the user's message, then returns (and stores) the assistant's reply. With the backend
+ * this takes a few seconds to half a minute, while Claude looks things up; when it fails,
+ * nothing is stored and the question can be sent again.
+ */
 export async function sendChatMessage(text: string): Promise<ChatMessage> {
+  if (!USE_MOCK) {
+    try {
+      return await apiFetch<ChatMessage>('/api/chat', { method: 'POST', body: JSON.stringify({ text }) });
+    } catch (e) {
+      // A backend started before the assistant existed doesn't have the route.
+      if (e instanceof ApiError && (e.status === 404 || e.status === 405)) {
+        throw new ApiError(e.status, "The server doesn't have the assistant yet. Restart the backend and try again.");
+      }
+      throw e;
+    }
+  }
   db.chat.push(message('user', { text }));
   await delay(1200);
   const q = text.toLowerCase();
-  let answer = USE_MOCK ? FALLBACK : NOT_CONNECTED;
-  if (USE_MOCK) {
-    if (q.includes('on track')) answer = onTrackAnswer(db.transactions);
-    else if (/restaurant|eating out|dining|takeout|take-out/.test(q)) answer = restaurantsAnswer(db.transactions);
-    else if (/\bcard\b|cashback|rewards?/.test(q)) answer = cardAnswer(q, db.transactions, db.cards);
-  }
+  let answer = FALLBACK;
+  if (q.includes('on track')) answer = onTrackAnswer(db.transactions);
+  else if (/restaurant|eating out|dining|takeout|take-out/.test(q)) answer = restaurantsAnswer(db.transactions);
+  else if (/\bcard\b|cashback|rewards?/.test(q)) answer = cardAnswer(q, db.transactions, db.cards);
   const reply = message('assistant', answer);
   db.chat.push(reply);
   return clone(reply);
+}
+
+/** Deletes the conversation. */
+export async function clearChat(): Promise<void> {
+  if (!USE_MOCK) return apiFetch<void>('/api/chat', { method: 'DELETE' });
+  await delay(150);
+  db.chat = [];
 }
 
 // ---------------------------------------------------------------------------

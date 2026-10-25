@@ -18,8 +18,8 @@ from pydantic.alias_generators import to_camel
 
 from .store import Library, StoredDocument
 
-# Must match CATEGORIES in src/types.ts.
-AppCategory = Literal[
+# Must match EXPENSE_CATEGORIES and INCOME_CATEGORIES in src/types.ts.
+ExpenseCategory = Literal[
     "Groceries",
     "Food",
     "Transport",
@@ -30,15 +30,17 @@ AppCategory = Literal[
     "Phone & Internet",
     "Utilities",
     "Housing",
-    "Income",
     "Other",
 ]
+IncomeCategory = Literal["Work", "Tax refund", "Side income", "Reimbursement", "Other income"]
+AppCategory = Literal[ExpenseCategory, IncomeCategory]
 APP_CATEGORIES: tuple[AppCategory, ...] = get_args(AppCategory)
+INCOME_CATEGORIES: tuple[IncomeCategory, ...] = get_args(IncomeCategory)
 
 # Workbook expense category -> app category. A workbook category that isn't
 # listed shows under the app category with the same name, else under Other.
-# Income rows always show as Income.
-EXPENSE_CATEGORIES: dict[str, AppCategory] = {
+# Income rows use INCOME_CATEGORY_MAP below.
+EXPENSE_CATEGORIES: dict[str, ExpenseCategory] = {
     "Bank": "Other",
     "Car maintenance": "Transport",
     "Car payment": "Transport",
@@ -63,6 +65,16 @@ EXPENSE_CATEGORIES: dict[str, AppCategory] = {
     "Telecom": "Phone & Internet",
     "Travel": "Transport",
     "Work": "Other",
+}
+
+# Workbook income category -> app income category. Any workbook category starting
+# with "Job" (e.g. "Job Sagard") is Work; one named like an app income category
+# shows under it; anything else is Other income.
+INCOME_CATEGORY_MAP: dict[str, IncomeCategory] = {
+    "Side project": "Side income",
+    "AIRBNB": "Side income",
+    "Expense reimbursement": "Reimbursement",
+    "Other": "Other income",
 }
 
 # Statements don't record their currency yet; the app is Canadian.
@@ -94,7 +106,7 @@ class Card(CardFields):
 
 
 class RewardRuleFields(AppModel):
-    category: AppCategory | Literal["*"]  # "*": every category without its own rule
+    category: ExpenseCategory | Literal["*"]  # "*": every category without its own rule
     rate_percent: float = Field(gt=0, le=20)
     cap: float | None = Field(default=None, gt=0)  # monthly spend limit for this rate
 
@@ -175,12 +187,17 @@ def is_document_id(doc_id: str) -> bool:
 
 
 def app_category(kind: str, workbook_category: str | None) -> AppCategory:
-    if kind == "income":
-        return "Income"
     name = (workbook_category or "").strip()
+    if kind == "income":
+        if name in INCOME_CATEGORY_MAP:
+            return INCOME_CATEGORY_MAP[name]
+        if name.casefold().startswith("job"):
+            return "Work"
+        return next((c for c in INCOME_CATEGORIES if c.casefold() == name.casefold()), "Other income")
     if name in EXPENSE_CATEGORIES:
         return EXPENSE_CATEGORIES[name]
-    return next((c for c in APP_CATEGORIES if c != "Income" and c.casefold() == name.casefold()), "Other")
+    expense_categories = (c for c in APP_CATEGORIES if c not in INCOME_CATEGORIES)
+    return next((c for c in expense_categories if c.casefold() == name.casefold()), "Other")
 
 
 def _merchant(kind: str, row: dict) -> str:
@@ -223,7 +240,8 @@ def _rows(budget: dict):
 def _receipt_transaction(row: dict, rules: dict[str, str]) -> Transaction:
     merchant = row["merchant"]
     category = next(
-        (c for c in (row.get("app_category"), rules.get(merchant)) if c in APP_CATEGORIES and c != "Income"), "Other"
+        (c for c in (row.get("app_category"), rules.get(merchant)) if c in APP_CATEGORIES and c not in INCOME_CATEGORIES),
+        "Other",
     )
     return Transaction(
         id=row["id"],
@@ -499,8 +517,8 @@ class ExpenseInput(AppModel):
     @model_validator(mode="after")
     def _check(self) -> "ExpenseInput":
         date.fromisoformat(self.date)  # a real day, not just the right shape
-        if self.category == "Income":
-            raise ValueError("An expense can't be in the Income category.")
+        if self.category in INCOME_CATEGORIES:
+            raise ValueError("An expense can't be in an income category.")
         return self
 
 
