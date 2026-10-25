@@ -18,3 +18,5 @@ output/
 library/
 data/
 
+# Snapshots of real statement data (tests/test_snapshot.py)
+tests/snapshots/

@@ -1,0 +1,21 @@
+{
+  "id": "chequing-sep-2222bbbb",
+  "name": "Sep2026.pdf",
+  "sha256": "2222bbbb00000000000000000000000000000000000000000000000000000000",
+  "added": "2026-10-01T10:00:00",
+  "pages": [
+    {
+      "file": "pages/001.png",
+      "media_type": "image/png",
+      "width": 10,
+      "height": 10
+    },
+    {
+      "file": "pages/002.png",
+      "media_type": "image/png",
+      "width": 10,
+      "height": 10
+    }
+  ],
+  "original_name": "chequing.pdf"
+}

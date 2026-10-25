@@ -1,4 +1,4 @@
-"""Run the document pipeline on a PDF and save the results in the local library.
+"""Run the document pipeline on a PDF and save the results with a user's statements.
 
     uv run python -m personal_banker.docai statement.pdf
     uv run --extra paddle python -m personal_banker.docai statement.pdf --engine paddleocr-vl
@@ -14,7 +14,7 @@ from typing import get_args
 
 from ..llm import make_client
 from ..pipeline import PasswordRequired, prepare_pdf
-from ..store import DEFAULT_ROOT, Library
+from ..datastore import DEFAULT_ROOT, Storage, local_user
 from .pipeline import EXTRACTION_ENGINE, Engine, engine_concurrency, extract_page
 from .render import render_pdf
 
@@ -23,11 +23,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("pdf", type=Path)
     parser.add_argument("--library", type=Path, default=DEFAULT_ROOT, help="Library folder (default: %(default)s).")
+    parser.add_argument("--user", help="Whose statements to add it to (default: PERSONAL_BANKER_LOCAL_USER).")
     parser.add_argument("--engine", choices=get_args(Engine), default=EXTRACTION_ENGINE, help="Extraction engine (default: %(default)s, set by PERSONAL_BANKER_EXTRACTION_ENGINE in .env).")
     parser.add_argument("--concurrency", type=int, help="Pages processed in parallel (default: 4 for Claude, 1 for PaddleOCR-VL).")
     args = parser.parse_args()
 
-    library = Library(args.library)
+    storage = Storage(args.library)
+    library = storage.store(args.user or local_user(storage)).files
     raw = args.pdf.read_bytes()
     try:
         pdf = prepare_pdf(raw)

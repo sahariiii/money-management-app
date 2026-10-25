@@ -6,15 +6,16 @@ import anthropic
 import pandas as pd
 import streamlit as st
 
-from personal_banker.categorize import DEFAULT_WORKBOOK, RulesError, budget_record, categorize_statement, to_xlsx
+from personal_banker.categorize import budget_record, categorize_statement, to_xlsx
 from personal_banker.llm import ExtractionError
-from personal_banker.service import budget_workbook
+from personal_banker.service import CategorizeSkipped, save_categorized, workbook_setup
 from personal_banker.store import Library
 from personal_banker.streamlit_support import (
     budget_setup,
     credentials_notice,
     get_client,
     get_library,
+    get_store,
 )
 
 # app_category is the category picked in the mobile app; it isn't shown here but must survive saving edits.
@@ -42,14 +43,16 @@ def frame(rows: list[dict], columns: list[str]) -> pd.DataFrame:
     return df
 
 
-library: Library = get_library()
+store = get_store()
+library: Library = store.files
 if "cat_errors" not in st.session_state:
     st.session_state.cat_errors = {}  # document id -> error message from the last run
 
 st.title("Budget categories")
 st.caption(
-    "Sorts the transactions in your transcribed statements into the categories from your budget workbook. "
-    f"Results and your edits are saved with each statement under {library.root}/."
+    "Sorts the transactions in your transcribed statements into the categories from your budget workbook "
+    "(or the app's own, without one). Results and your edits are saved with each statement under "
+    f"{library.root}/ and go into the app's ledger."
 )
 
 # --- Inputs: transcribed documents and the budget workbook -------------------
@@ -60,18 +63,10 @@ if not ready:
     st.page_link("app_pages/document_viewer.py", label="Open the document viewer", icon=":material/document_scanner:")
     st.stop()
 
-if (found := budget_workbook()) is None:
-    st.warning(f"Put your budget workbook at {DEFAULT_WORKBOOK}.", title="No budget workbook")
-    st.stop()
-workbook, workbook_name = found
-
 try:
-    setup = budget_setup(workbook)
-except RulesError as e:
-    st.error(str(e), title="Problem with the Vendor Rules tab")
-    st.stop()
-except (KeyError, StopIteration) as e:
-    st.error(f"Couldn't find the 'Category Setup', 'Expenses' and 'Income' tabs: {e}", title="Unexpected workbook layout")
+    setup, workbook_name = workbook_setup(store, budget_setup)
+except CategorizeSkipped as e:
+    st.error(str(e), title="Problem with the budget workbook")
     st.stop()
 st.caption(
     f"Using {workbook_name}: {len(setup.expense_categories)} expense and {len(setup.income_categories)} income "
@@ -113,7 +108,7 @@ if run:
         for finished, future in enumerate(as_completed(futures), start=1):
             doc_id = futures[future]
             try:
-                library.save_budget(ready[doc_id], budget_record(future.result(), workbook_name))
+                save_categorized(store, ready[doc_id], budget_record(future.result(), workbook_name))
                 st.session_state.cat_errors.pop(doc_id, None)
             except (ExtractionError, anthropic.APIError) as e:
                 st.session_state.cat_errors[doc_id] = str(e)
@@ -228,7 +223,8 @@ if edited_expense_rows != to_records(base_expenses) or edited_income_rows != to_
                 def own(rows: list[dict]) -> list[dict]:
                     return [{k: v for k, v in r.items() if k not in DISPLAY_ONLY} for r in rows if r["doc"] == doc_id]
 
-                library.save_budget(
+                save_categorized(
+                    store,
                     ready[doc_id],
                     {**budgets[doc_id], "edited": True,
                      "expenses": own(edited_expense_rows), "income": own(edited_income_rows)},

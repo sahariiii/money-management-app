@@ -1086,16 +1086,17 @@ export async function uploadStatement(file: PickedFile, password?: string): Prom
     throw new ApiError(422, statement.message ?? "The statement couldn't be read.", 'incomplete');
   }
 
-  // Transaction ids start with their statement's id.
-  const rows = (await allTransactions()).filter((t) => t.id.startsWith(`${statement.id}-`));
+  // The statement's own transactions; rows another statement already brought are left out of the ledger.
+  const rows = (await allTransactions()).filter((t) => t.statementId === statement.id);
+  const duplicates = statement.duplicateCount ?? 0;
   const dates = rows.map((t) => t.date).sort();
   return {
     fileName: file.name,
-    transactionsFound: rows.length,
+    transactionsFound: rows.length + duplicates,
     range: { from: dates[0] ?? today(), to: dates.at(-1) ?? today() },
     totalSpent: round2(sum(rows.filter((t) => !t.isIncome).map((t) => t.amount))),
     totalIncome: round2(sum(rows.filter((t) => t.isIncome).map((t) => t.amount))),
-    alreadyInLedger: alreadyThere ? rows.length : 0,
+    alreadyInLedger: alreadyThere ? rows.length + duplicates : duplicates,
     newTransactions: alreadyThere ? 0 : rows.length,
     balanceCheck: 'not_checked',
   };

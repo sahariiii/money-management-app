@@ -321,8 +321,10 @@ export type Statement = {
   status: 'processing' | 'done' | 'incomplete';
   /** What is happening now, or why it stopped short. */
   message: string | null;
-  /** Transactions it added to the ledger, once done. */
+  /** Transactions found on it, once done. */
   transactionCount: number | null;
+  /** Of those, how many another statement already brought (left out so they count once). */
+  duplicateCount: number | null;
   /** Last 4 digits of the account number printed on the statement. */
   accountLast4: string | null;
   /**

@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import * as DocumentPicker from 'expo-document-picker';
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
 
 import { AlertBanner, Button, Card, DetailRow, EmptyState, Screen, SectionHeader } from '@/components';
 import { colors, layout, spacing, typography } from '@/constants/theme';
@@ -43,8 +43,10 @@ export default function UploadStatement() {
     try {
       const res = await DocumentPicker.getDocumentAsync({
         type: ['text/csv', 'text/comma-separated-values', 'application/pdf'],
-        // A copy in the app's cache is a plain file the upload can read (Android otherwise gives a content:// uri).
-        copyToCacheDirectory: true,
+        // Android: upload from the picked document's own content:// uri. The picker's copy lands in a
+        // cache folder that expo-file-system refuses to read in Expo Go ("missing 'read' permission"),
+        // while content:// uris from other apps' providers are allowed (FileSystemPath.checkPermission).
+        copyToCacheDirectory: Platform.OS !== 'android',
       });
       if (res.canceled) return;
       const a = res.assets[0];
@@ -68,8 +70,11 @@ export default function UploadStatement() {
       setPhase('done');
     } catch (e) {
       setPhase('idle');
-      // The backend says why (e.g. "Extracted, but not categorized. ..."); anything else is the file itself.
-      setError(e instanceof ApiError ? e.message : "Couldn't read that file. Try a CSV or PDF statement.");
+      // The backend says why (e.g. "Extracted, but not categorized. ..."). Anything else failed on the
+      // device (attaching the file, or the request itself), so show what it was rather than blame the file.
+      console.warn('Statement upload failed:', e);
+      const detail = e instanceof Error ? e.message : String(e);
+      setError(e instanceof ApiError ? e.message : `Couldn't upload that file: ${detail}`);
     }
   }
 

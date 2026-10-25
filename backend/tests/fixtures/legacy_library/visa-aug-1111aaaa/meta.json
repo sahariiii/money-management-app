@@ -1,0 +1,15 @@
+{
+  "id": "visa-aug-1111aaaa",
+  "name": "Aug2026.pdf",
+  "sha256": "1111aaaa00000000000000000000000000000000000000000000000000000000",
+  "added": "2026-09-01T10:00:00",
+  "pages": [
+    {
+      "file": "pages/001.png",
+      "media_type": "image/png",
+      "width": 10,
+      "height": 10
+    }
+  ],
+  "original_name": "visa-aug.pdf"
+}

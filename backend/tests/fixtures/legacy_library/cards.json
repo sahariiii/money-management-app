@@ -1,0 +1,30 @@
+{
+  "cards": [
+    {
+      "institution": "CIBC",
+      "type": "credit",
+      "nickname": "Dividend Visa",
+      "last4": "4242",
+      "account_last4": "1111",
+      "annual_fee": 120.0,
+      "interest_rate": 20.99,
+      "cycle_day": 14,
+      "id": "card_aaaaaaaaaaaa",
+      "is_placeholder": false
+    }
+  ],
+  "reward_rules": [
+    {
+      "category": "Groceries",
+      "rate_percent": 4.0,
+      "cap": null,
+      "card_id": "card_aaaaaaaaaaaa"
+    },
+    {
+      "category": "*",
+      "rate_percent": 1.0,
+      "cap": null,
+      "card_id": "card_aaaaaaaaaaaa"
+    }
+  ]
+}

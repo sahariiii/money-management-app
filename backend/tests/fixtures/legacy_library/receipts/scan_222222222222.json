@@ -1,0 +1,14 @@
+{
+  "id": "scan_222222222222",
+  "scanned_at": "2026-08-08T20:01:00",
+  "date": "2026-08-08",
+  "subtotal": 74.87,
+  "tax": 9.73,
+  "tax_label": "HST 13%",
+  "currency": "CAD",
+  "merchant": "Rogers",
+  "total": 65.0,
+  "items": [],
+  "card_last4": null,
+  "transaction_id": "chequing-sep-2222bbbb-e001"
+}

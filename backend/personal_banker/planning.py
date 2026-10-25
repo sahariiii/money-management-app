@@ -1,4 +1,4 @@
-"""The mobile app's monthly budgets per category and its one savings goal, kept in library/plan.json.
+"""The mobile app's monthly budgets per category and its one savings goal, kept in the user's DataStore.
 
 The app suggests budgets that reach the goal (src/lib/savings-plan.ts) and saves the
 goal and those budgets together. Progress toward the goal is money in minus money
@@ -7,39 +7,21 @@ read (goal_progress, the same as goalStatus in src/lib/api.ts). Models mirror
 src/types.ts.
 """
 
-import threading
 from datetime import date
 
 from pydantic import Field, model_validator
 
-from .ledger import AppModel, ExpenseCategory, Transaction
-from .store import Library
+from .datastore import DataStore
+from .ledger import Transaction
+from .records import AppModel, Budget, SavingsGoal
+
+__all__ = ["Budget", "SavingsGoal"]  # re-exported from records
 
 DAYS_PER_MONTH = 365.25 / 12
-
-_write_lock = threading.Lock()
-
-
-class Budget(AppModel):
-    category: ExpenseCategory
-    monthly_limit: float = Field(gt=0, le=100_000)
 
 
 class BudgetLimit(AppModel):
     monthly_limit: float = Field(gt=0, le=100_000)
-
-
-class SavingsGoal(AppModel):
-    name: str = Field(min_length=1, max_length=60)
-    target_amount: float = Field(gt=0, le=10_000_000)
-    start_date: date  # the day it was set; saving counts from here
-    target_date: date
-
-    @model_validator(mode="after")
-    def _ends_after_start(self) -> "SavingsGoal":
-        if self.target_date <= self.start_date:
-            raise ValueError("The target date must be after the day the goal starts.")
-        return self
 
 
 class GoalPlan(AppModel):
@@ -56,59 +38,33 @@ class GoalPlan(AppModel):
         return self
 
 
-def _read(library: Library) -> tuple[list[Budget], SavingsGoal | None]:
-    data = library.plan()
-    saved_goal = data.get("goal")
-    return (
-        [Budget.model_validate(b) for b in data.get("budgets", [])],
-        SavingsGoal.model_validate(saved_goal) if saved_goal else None,
-    )
+def budgets(store: DataStore) -> list[Budget]:
+    return store.budgets()
 
 
-def _save(library: Library, budgets_: list[Budget], goal_: SavingsGoal | None) -> None:
-    library.save_plan(
-        {
-            "budgets": [b.model_dump(mode="json") for b in budgets_],
-            "goal": goal_.model_dump(mode="json") if goal_ else None,
-        }
-    )
-
-
-def budgets(library: Library) -> list[Budget]:
-    return _read(library)[0]
-
-
-def set_budget(library: Library, category: ExpenseCategory, monthly_limit: float) -> Budget:
+def set_budget(store: DataStore, category: str, monthly_limit: float) -> Budget:
     """Creates or changes the monthly limit for a category."""
     budget = Budget(category=category, monthly_limit=round(monthly_limit, 2))
-    with _write_lock:
-        saved, saved_goal = _read(library)
-        if any(b.category == category for b in saved):
-            saved = [budget if b.category == category else b for b in saved]
-        else:
-            saved = [*saved, budget]
-        _save(library, saved, saved_goal)
+    store.save_budget(budget)
     return budget
 
 
-def goal(library: Library) -> SavingsGoal | None:
-    return _read(library)[1]
+def goal(store: DataStore) -> SavingsGoal | None:
+    return store.goal()
 
 
-def save_goal(library: Library, plan: GoalPlan) -> SavingsGoal:
+def save_goal(store: DataStore, plan: GoalPlan) -> SavingsGoal:
     """Saves the goal and replaces every budget with the plan's."""
-    with _write_lock:
-        _save(library, plan.budgets, plan.goal)
+    store.replace_budgets(plan.budgets)
+    store.save_goal(plan.goal)
     return plan.goal
 
 
-def delete_goal(library: Library) -> bool:
+def delete_goal(store: DataStore) -> bool:
     """Removes the goal and keeps the budgets; False when there was none."""
-    with _write_lock:
-        saved, saved_goal = _read(library)
-        if saved_goal is None:
-            return False
-        _save(library, saved, None)
+    if store.goal() is None:
+        return False
+    store.save_goal(None)
     return True
 
 

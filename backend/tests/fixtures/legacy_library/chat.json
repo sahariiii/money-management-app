@@ -1,0 +1,22 @@
+{
+  "messages": [
+    {
+      "id": "msg_000000000001",
+      "role": "user",
+      "text": "How much on food?",
+      "created_at": "2026-10-01T10:00:00+00:00",
+      "summary": null
+    },
+    {
+      "id": "msg_000000000002",
+      "role": "assistant",
+      "text": "$84.60 in August.",
+      "created_at": "2026-10-01T10:00:05+00:00",
+      "summary": {
+        "value": "$84.60",
+        "label": "Food in August",
+        "tone": "expense"
+      }
+    }
+  ]
+}

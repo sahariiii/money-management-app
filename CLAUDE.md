@@ -6,8 +6,8 @@ shows spending, budgets, bill alerts, a credit-card rewards optimizer, and an AI
 assistant that remembers spending habits. Later the backend will be FastAPI (Python),
 Clerk for auth, SurrealDB for the ledger, SurrealDB Agent Memory for long-term memory.
 
-Current phase: UI + real auth (Clerk) + the Python backend in backend/ (FastAPI over the file
-library the Streamlit pipeline writes; no database yet). Transactions, cards with their reward
+Current phase: UI + real auth (Clerk) + the Python backend in backend/ (FastAPI; each user's
+records go through a DataStore, JSON files for now, so SurrealDB can replace it without touching callers). Transactions, cards with their reward
 rules (add, edit, delete), statement upload, receipt scanning, budgets, the savings goal and the
 assistant chat come from the backend; bills and alerts aren't in the backend yet, so with it they
 start empty (additions last until reload) and the full demo exists only in mock mode.
@@ -41,8 +41,10 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
   (expo-document-picker / expo-image-picker) are real.
 - backend/personal_banker/assistant.py — the assistant: Claude (tool runner) with read-only tools over
   ledger.transactions/cards (list_cards, spending_summary, find_transactions, budgets_and_goal) plus
-  show_headline, which sets the reply's `summary` card. The conversation is library/chat.json
+  show_headline, which sets the reply's `summary` card. The conversation is the user's DataStore.chat
   (GET/POST/DELETE /api/chat); earlier turns go back to Claude as plain text, without their tool calls.
+  Long-term memory has an interface (backend/personal_banker/memory.py: MemoryStore, JsonMemoryStore via
+  Storage.memory) but the assistant doesn't use it yet.
   It doesn't know bills (not in the backend). Replies are plain text (no Markdown): the chat bubble is a plain Text.
   Cashback questions go through its `cashback` tool (backend/personal_banker/rewards.py): what the
   statements print is the answer; only spending no printed statement covers gets an estimate (same
@@ -62,9 +64,9 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
   card's latest statement (getStatementRewards): the amount is the statement's own printed rewards
   summary (Statement.rewards), with the app's estimate per rate beside it (that statement's own
   transactions, via Transaction.statementId). No printed summary: the estimate is the amount.
-- Statement rewards: extraction saves budget.json "period" and "rewards" (lines as printed, this
-  statement only). Statements categorized before that get them at API startup (_read_summary, one
-  Claude call over the saved transcription; bank-account statements are skipped).
+- Statement rewards: categorizing saves "period" and "rewards" (lines as printed, this statement only)
+  in budget.json and on the StatementRecord. Statements categorized before that get them at API startup
+  (_read_summary, one Claude call over the saved transcription; bank-account statements are skipped).
 - Savings goal (one per user): name, amount, startDate (the day it was set), targetDate. Saved is
   money in minus money out from startDate through the latest transaction (`asOf`: statements arrive
   late), against a straight-line pace to the target date (goalStatus in api.ts, goal_progress in
@@ -73,7 +75,7 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
   3 complete months, refunds netted): discretionary categories are cut first (up to 50%), then
   everyday needs (up to 15%); fixed costs (housing, car, phone, utilities, fees) never. Saving the
   goal replaces every budget at once (PUT /api/goal), keeping budgets for categories the plan doesn't
-  list. Budgets and the goal live in library/plan.json (planning.py; GET/PUT /api/budgets/{category},
+  list. Budgets and the goal are in the user's DataStore (planning.py; GET/PUT /api/budgets/{category},
   GET/PUT/DELETE /api/goal).
 - src/lib/card-presets.ts — known cards (CARD_PRESETS) with their published cashback; the card form's
   "Known cards" chips fill in everything but the card's own numbers. The mock Visa uses the CIBC one.
@@ -88,33 +90,62 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
   messy raw descriptions, Food budget ~85% in Oct, biweekly payroll.
 - backend/personal_banker/api.py — FastAPI app for the Expo app. Run from backend/:
   `uv run uvicorn personal_banker.api:app --host 0.0.0.0 --port 8000`. Models mirror src/types.ts.
-- backend/personal_banker/ledger.py — budget.json rows as app transactions. Rows keep workbook
-  categories (Streamlit and the workbook export need them); EXPENSE_CATEGORIES maps expense rows onto
+  Every /api route takes the caller's DataStore (`store: Store`, from the verified user id); never
+  reach storage any other way. Statement processing runs in one background worker, but each
+  statement's status (queued/running/stopped/done, stage, message) is saved on its StatementRecord,
+  and startup resumes queued/running ones for every user.
+- backend/personal_banker/datastore.py — `DataStore` (Protocol: one user's statements, transactions,
+  cards + reward rules, merchant rules, budgets + goal, receipt scans, chat) and `JsonDataStore`, which
+  keeps them as JSON under library/users/<Clerk user id>/ (layout in its docstring). `Storage` opens a
+  user's store (`store(user_id)`, `memory(user_id)`, `user_ids()`). All read-change-write file logic
+  lives here; ledger.py/planning.py/assistant.py only call record methods. A SurrealDB store implements
+  the same Protocol. backend/personal_banker/records.py holds the stored record models (and the shared
+  app models: categories, Card, Budget, ChatMessage, re-exported from ledger/planning/assistant).
+  backend/personal_banker/store.py `Library` is just one user's statement files (DataStore.files):
+  PDF, page images, transcriptions, and the categorizer's budget.json.
+- backend/personal_banker/ledger.py — the user's transactions as the app sees them. import_statement
+  stores a statement's budget.json rows as TransactionRecords with ids that never change (`tx_<hex>`;
+  rows migrated from before keep their old `<doc>-e003` ids as plain strings — never parse an id).
+  Each gets a dedup_key (account last4 + date + direction + amount + description as printed + which
+  occurrence on its statement); a row an earlier statement already brought is stored with duplicate_of
+  and left out, so overlapping statements count once (Statement.duplicateCount). Re-importing (e.g.
+  after Streamlit edits) matches rows by dedup_key, keeping ids and app-picked categories.
+  Rows keep workbook categories (workbook_category); EXPENSE_CATEGORIES maps expense rows onto
   the app's EXPENSE_CATEGORIES, INCOME_CATEGORY_MAP income rows onto INCOME_CATEGORIES (Work, Tax refund,
-  Side income, Reimbursement, Other income; workbook "Job…" = Work). There is no single "Income"
-  category: check `isIncome` for direction, `isIncomeCategory()` for the kind of category. Refunds are
-  isIncome with a spending category. App edits go in a row's `app_category`, "always" rules in library/merchant_rules.json.
-  Refunds (negative expenses) become isIncome: true, since app amounts are always positive.
-  Cards and reward rules live in library/cards.json. A statement's transactions go on the card whose
-  `account_last4` equals the statement's (budget.json "account".last4, from the categorizer), worked
-  out on every read, so editing a card re-links at once. Unmatched statements' transactions go on
-  DUMMY_CARD ("Unmatched statements", isPlaceholder: true, not editable), listed while any exist; the
-  Activity tab warns about them (Statement.cardMatch). Statements categorized before "account" existed
-  are "pending" until the API's startup backfill reads it from their transcription.
-  Expenses added from receipts ("Add as expense") live in library/receipts.json (ids `receipt_<hex>`,
-  source: "receipt", cardId a card or CASH_CARD_ID "cash"; only these can be deleted). find_match
+  Side income, Reimbursement, Other income; workbook "Job…" = Work), stored as auto_category. There is no
+  single "Income" category: check `isIncome` for direction, `isIncomeCategory()` for the kind of category.
+  Refunds (negative expenses) become isIncome: true with a spending category, since app amounts are
+  always positive. Shown category = user_category (picked in the app) > merchant rule ("always") > auto_category.
+  A statement's transactions go on the card whose `account_last4` equals the statement's
+  (StatementRecord.account.last4, from the categorizer), worked out on every read, so editing a card
+  re-links at once. Unmatched statements' transactions go on DUMMY_CARD ("Unmatched statements",
+  isPlaceholder: true, not editable), listed while any exist; the Activity tab warns about them
+  (Statement.cardMatch). Statements whose account isn't read yet are "pending" until the API's startup
+  backfill reads it from their transcription.
+  Expenses added from receipts ("Add as expense") are TransactionRecords with source "receipt" (ids
+  `receipt_<hex>`, cardId a card or CASH_CARD_ID "cash"; only these can be deleted). find_match
   links a receipt to an expense with the same amount within MATCH_DAYS, on the card whose `last4`
   is printed on the receipt (or the placeholder). A receipt expense is hidden once a statement brings
   the same purchase, and that transaction takes its category unless the user picked one.
-  Every scan is saved in library/receipts/ (`scan_<hex>`.jpg + .json: what was read, transaction_id).
+  Every scan is saved (ScanRecord + photo: what was read, transaction_id).
   It gets a transaction when added as an expense (ExpenseInput.receipt_id) or attached to its match
   (POST /api/receipts/{id}/attach); unsaved scans are deleted after a day. Transaction.receiptId comes
   from that link (or from the receipt expense a statement row replaced); GET /api/receipts/{id} returns
   the details with the photo as a data: URL (the app can't send auth headers for an image).
+- backend/personal_banker/migrate.py — copies the pre-per-user library (statement folders and
+  cards.json etc. at the top of library/) to one user: `uv run python -m personal_banker.migrate --user
+  <Clerk user id>`. Until run, nobody sees that data; the server logs the command with the signed-in
+  user's id. It writes library/.migrated and leaves the old files in place.
+- backend/tests — `uv run pytest` (from backend/). test_snapshot.py proves migration changes no API
+  response: fixtures/legacy_expected.json was captured from the code before per-user records, over the
+  made-up fixtures/legacy_library; snapshots/real_library.json (git-ignored: real data) does the same for
+  backend/library. A deliberately new response field goes in ADDED_FIELDS there.
 - On native, uploads (statements, receipts) must append an expo-file-system `File`, not React Native's
   `{ uri, name, type }`: SDK 58's expo/fetch replaces global fetch and rejects those parts. See appendFile in api.ts.
-- backend/personal_banker/service.py — statement processing (extract pages, then categorize),
-  shared by the API's background jobs and the Streamlit document viewer.
+- backend/personal_banker/service.py — statement processing (extract pages, categorize, import into
+  the ledger), shared by the API's background jobs and the Streamlit document viewer. The budget
+  workbook (PERSONAL_BANKER_WORKBOOK) is optional: without it, the categorizer uses the app's own
+  categories (app_budget_setup), with the user's ledger so far as examples.
 
 ## Auth (Clerk)
 - Package `@clerk/expo` v4 (custom flows, JS only: works in Expo Go and on web; no native
@@ -141,7 +172,9 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
 - Backend calls: `apiFetch()` in api.ts sends `Authorization: Bearer <Clerk session token>`
   (`getAuthToken()` via `getClerkInstance()`). Never send a user ID: the backend verifies the token
   (backend/personal_banker/auth.py, using the same EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY from .env; a
-  CLERK_PUBLISHABLE_KEY env var overrides it) and takes the user from it.
+  CLERK_PUBLISHABLE_KEY env var overrides it) and takes the user from it: every request only sees that
+  user's DataStore. PERSONAL_BANKER_API_TOKEN callers are PERSONAL_BANKER_API_TOKEN_USER (or "api-token");
+  with no key and no token set, everyone is "anyone".
 
 ## Gotchas
 - Clerk dashboard settings matter (instance logical-sole-3210, dev): phone number and username are
@@ -156,6 +189,9 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
   Constants.expoConfig.hostUri). Windows Firewall must allow inbound port 8000.
 - Statement extraction uses Claude by default; PERSONAL_BANKER_EXTRACTION_ENGINE=paddleocr-vl in .env switches
   to the local (much slower) PaddleOCR-VL. Results are stored per engine; budget.json isn't.
+- Streamlit (`uv run streamlit run streamlit_app.py`) and the CLIs work as one user:
+  PERSONAL_BANKER_LOCAL_USER, or the only user with data. Saving categories there re-imports the
+  statement into that user's ledger.
 - `uv add` and `uv sync` without `--extra paddle` uninstall PaddleOCR-VL. Run `uv sync --extra paddle` after
   (only matters if you use that engine).
 - Typed routes (.expo/types/router.d.ts) can go stale while the dev server runs on Windows:

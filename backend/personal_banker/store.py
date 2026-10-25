@@ -1,6 +1,6 @@
-"""Local library of processed statements.
+"""One user's statement files: the uploads and everything read from them.
 
-    library/
+    <user folder>/statements/        (see datastore.py for the rest of the user's folder)
       <name>-<sha8>/
         meta.json              display name (renamed to the statement period once categorized),
                                original file name, hash, when added, page image info
@@ -11,21 +11,15 @@
         document.md            all pages, written once every page is transcribed
         paddleocr-vl/          the same results from the local PaddleOCR-VL engine:
           001.json, 001.md, document.md
-        budget.json           categorized expense / income / skipped rows, including the user's edits
-      merchant_rules.json      merchant -> app category, from "always categorize" in the mobile app
-      cards.json               the mobile app's cards and their reward rules (last 4 digits only)
-      receipts.json            expenses added from scanned receipts in the mobile app
-      receipts/<scan id>.jpg   a scanned receipt's photo (upright, at most 1568 px)
-      receipts/<scan id>.json  what was read from it, and the transaction it belongs to
-      chat.json                the conversation with the app's assistant
-      plan.json                the mobile app's monthly budgets and its savings goal
+        budget.json            the categorizer's expense / income / skipped rows (Streamlit edits them);
+                               the app's ledger is imported from it (ledger.import_statement)
 
-The folder is configurable with PERSONAL_BANKER_LIBRARY and is git-ignored.
+The app's state for a statement (processing status, account, period) and its
+transactions are records in the user's DataStore, not files here.
 """
 
 import hashlib
 import json
-import os
 import re
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
@@ -39,7 +33,6 @@ from .docai.render import PageImage
 from .docai.schemas import PageLayout, PageTranscription
 from .llm import CallResult
 
-DEFAULT_ROOT = Path(os.environ.get("PERSONAL_BANKER_LIBRARY", "library"))
 EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg"}
 
 
@@ -91,7 +84,7 @@ def _slug(name: str) -> str:
 
 
 class Library:
-    def __init__(self, root: Path | str = DEFAULT_ROOT):
+    def __init__(self, root: Path | str):
         self.root = Path(root)
 
     def _dir(self, doc: StoredDocument) -> Path:
@@ -212,77 +205,3 @@ class Library:
     def budget(self, doc: StoredDocument) -> dict | None:
         path = self._dir(doc) / "budget.json"
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
-
-    # --- App merchant rules --------------------------------------------------------
-
-    def merchant_rules(self) -> dict[str, str]:
-        """Merchant name -> app category; the app applies these to every statement, including future ones."""
-        path = self.root / "merchant_rules.json"
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-
-    def save_merchant_rules(self, rules: dict[str, str]) -> None:
-        _write_json(self.root / "merchant_rules.json", rules)
-
-    # --- App cards -------------------------------------------------------------------
-
-    def cards(self) -> dict:
-        """The app's cards and their reward rules: {"cards": [...], "reward_rules": [...]} (see ledger.py)."""
-        path = self.root / "cards.json"
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"cards": [], "reward_rules": []}
-
-    def save_cards(self, data: dict) -> None:
-        _write_json(self.root / "cards.json", data)
-
-    # --- Expenses added from receipts ---------------------------------------------------
-
-    def receipt_expenses(self) -> list[dict]:
-        """Expenses the user added from scanned receipts (see ledger.py); the photos aren't kept."""
-        path = self.root / "receipts.json"
-        return json.loads(path.read_text(encoding="utf-8"))["expenses"] if path.exists() else []
-
-    def save_receipt_expenses(self, expenses: list[dict]) -> None:
-        _write_json(self.root / "receipts.json", {"expenses": expenses})
-
-    # --- Scanned receipts (photo + what was read from it) -----------------------------
-    # Ids are checked by the caller (ledger.is_scan_id) before they reach a path.
-
-    def scans(self) -> list[dict]:
-        folder = self.root / "receipts"
-        return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(folder.glob("*.json"))] if folder.exists() else []
-
-    def scan(self, scan_id: str) -> dict | None:
-        path = self.root / "receipts" / f"{scan_id}.json"
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
-
-    def scan_image(self, scan_id: str) -> bytes | None:
-        path = self.root / "receipts" / f"{scan_id}.jpg"
-        return path.read_bytes() if path.exists() else None
-
-    def save_scan(self, scan: dict, image_jpeg: bytes | None = None) -> None:
-        if image_jpeg is not None:
-            _write(self.root / "receipts" / f"{scan['id']}.jpg", image_jpeg)
-        _write_json(self.root / "receipts" / f"{scan['id']}.json", scan)
-
-    def delete_scan(self, scan_id: str) -> None:
-        for suffix in (".json", ".jpg"):
-            (self.root / "receipts" / f"{scan_id}{suffix}").unlink(missing_ok=True)
-
-    # --- Assistant chat ------------------------------------------------------------------
-
-    def chat(self) -> list[dict]:
-        """The assistant conversation as the app shows it, oldest first (see assistant.py)."""
-        path = self.root / "chat.json"
-        return json.loads(path.read_text(encoding="utf-8"))["messages"] if path.exists() else []
-
-    def save_chat(self, messages: list[dict]) -> None:
-        _write_json(self.root / "chat.json", {"messages": messages})
-
-    # --- Budgets and savings goal --------------------------------------------------------
-
-    def plan(self) -> dict:
-        """The app's monthly budgets and savings goal: {"budgets": [...], "goal": {...} | None} (see planning.py)."""
-        path = self.root / "plan.json"
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"budgets": [], "goal": None}
-
-    def save_plan(self, data: dict) -> None:
-        _write_json(self.root / "plan.json", data)

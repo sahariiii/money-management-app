@@ -1,0 +1,60 @@
+{
+  "title": "Sep2026",
+  "account": {
+    "type": "bank_account",
+    "institution": "RBC",
+    "name": "Chequing",
+    "last4": "9876"
+  },
+  "workbook": "fixture.xlsx",
+  "categorized_at": "2026-10-01T10:05:00",
+  "model": "claude-opus-5-5",
+  "input_tokens": 1,
+  "output_tokens": 1,
+  "rule_matches": 0,
+  "edited": false,
+  "expenses": [
+    {
+      "date": "2026-09-01",
+      "vendor": "Landlord",
+      "amount": 1800.0,
+      "category": "Rent",
+      "likely_shared": false,
+      "statement_description": "E-TRANSFER LANDLORD",
+      "review_note": null,
+      "categorized_by": "agent"
+    },
+    {
+      "date": "2026-09-03",
+      "vendor": "Rogers",
+      "amount": 65.0,
+      "category": "Telecom",
+      "likely_shared": false,
+      "statement_description": "ROGERS WIRELESS",
+      "review_note": null,
+      "categorized_by": "agent"
+    },
+    {
+      "date": "2026-09-04",
+      "vendor": null,
+      "amount": 400.0,
+      "category": "Debt",
+      "likely_shared": false,
+      "statement_description": "TOYOTA FINANCIAL PMT",
+      "review_note": null,
+      "categorized_by": "agent"
+    }
+  ],
+  "income": [
+    {
+      "date": "2026-09-15",
+      "source": "Acme",
+      "amount": 2500.0,
+      "category": "Job Acme",
+      "statement_description": "PAYROLL ACME",
+      "review_note": null,
+      "categorized_by": "agent"
+    }
+  ],
+  "skipped": []
+}

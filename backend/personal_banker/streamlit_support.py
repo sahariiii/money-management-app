@@ -1,4 +1,7 @@
-"""Streamlit helpers shared by the app's pages."""
+"""Streamlit helpers shared by the app's pages.
+
+Streamlit works on one user's data: PERSONAL_BANKER_LOCAL_USER, or the only user there is (datastore.local_user).
+"""
 
 import os
 
@@ -6,13 +9,28 @@ import anthropic
 import streamlit as st
 
 from .categorize import BudgetSetup, load_budget_setup
+from .datastore import DataStore, Storage, local_user
 from .llm import make_client
 from .store import Library
 
 
 @st.cache_resource
+def _store(user_id: str) -> DataStore:
+    return Storage().store(user_id)
+
+
+def get_store() -> DataStore:
+    try:
+        user_id = local_user(Storage())
+    except RuntimeError as e:
+        st.error(str(e), title="Whose data?")
+        st.stop()
+    return _store(user_id)
+
+
 def get_library() -> Library:
-    return Library()
+    """The local user's statement files."""
+    return get_store().files
 
 
 @st.cache_resource

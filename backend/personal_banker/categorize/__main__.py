@@ -1,28 +1,33 @@
-"""Categorize transcribed statements from the library into budget rows.
+"""Categorize a user's transcribed statements into budget rows and the app's ledger.
 
     uv run python -m personal_banker.categorize                  # every transcribed statement not yet categorized
     uv run python -m personal_banker.categorize <document id>... # specific statements (re-categorizes them)
 
-Saves each statement's rows to its budget.json and writes all rows to an .xlsx.
+Saves each statement's rows to its budget.json, imports them into the ledger and writes all rows to an .xlsx.
+Without a budget workbook, statements are sorted into the app's own categories.
 """
 
 import argparse
 from pathlib import Path
 
+from ..datastore import DEFAULT_ROOT, Storage, local_user
 from ..llm import make_client
-from ..store import DEFAULT_ROOT, Library
-from . import DEFAULT_WORKBOOK, RulesError, budget_record, categorize_statement, load_budget_setup, to_xlsx
+from ..service import CategorizeSkipped, save_categorized, workbook_setup
+from . import DEFAULT_WORKBOOK, budget_record, categorize_statement, load_budget_setup, to_xlsx
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("documents", nargs="*", help="Library document ids (folder names).")
     parser.add_argument("--library", type=Path, default=DEFAULT_ROOT, help="Library folder (default: %(default)s).")
-    parser.add_argument("--workbook", type=Path, default=Path(DEFAULT_WORKBOOK), help="Budget workbook to follow.")
+    parser.add_argument("--user", help="Whose statements (default: PERSONAL_BANKER_LOCAL_USER).")
+    parser.add_argument("--workbook", type=Path, default=Path(DEFAULT_WORKBOOK), help="Budget workbook to follow, if it exists.")
     parser.add_argument("--out", type=Path, default=Path("output/budget_rows.xlsx"))
     args = parser.parse_args()
 
-    library = Library(args.library)
+    storage = Storage(args.library)
+    store = storage.store(args.user or local_user(storage))
+    library = store.files
     transcribed = [d for d in library.documents() if library.markdown(d) is not None]
     if args.documents:
         by_id = {d.id: d for d in transcribed}
@@ -34,14 +39,17 @@ def main() -> None:
         todo = [d for d in transcribed if library.budget(d) is None]
 
     try:
-        setup = load_budget_setup(args.workbook)
-    except RulesError as e:
+        if args.workbook.exists():
+            setup, setup_name = load_budget_setup(args.workbook.read_bytes()), args.workbook.name
+        else:
+            setup, setup_name = workbook_setup(store)
+    except (CategorizeSkipped, ValueError) as e:
         parser.error(str(e))
-    print(f"{len(setup.rules)} vendor rules loaded from {args.workbook.name}")
+    print(f"Categorizing with {setup_name}: {len(setup.rules)} vendor rules")
     client = make_client()
     for doc in todo:
         result = categorize_statement(client, library.markdown(doc), setup)
-        library.save_budget(doc, budget_record(result, args.workbook.name))
+        save_categorized(store, doc, budget_record(result, setup_name))
         print(
             f"{doc.id}: {len(result.expenses)} expenses, {len(result.income)} income, {len(result.skipped)} skipped "
             f"({result.rule_matches} by vendor rules)"

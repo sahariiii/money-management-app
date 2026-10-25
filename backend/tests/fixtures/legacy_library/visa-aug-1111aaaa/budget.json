@@ -1,0 +1,153 @@
+{
+  "title": "Aug2026",
+  "account": {
+    "type": "credit_card",
+    "institution": "CIBC",
+    "name": "Dividend Visa",
+    "last4": "1111"
+  },
+  "period": {
+    "start": "2026-07-15",
+    "end": "2026-08-14"
+  },
+  "rewards": {
+    "program": "Dividend Cash Back",
+    "unit": "dollars",
+    "lines": [
+      {
+        "label": "4% Cash Back",
+        "rate_percent": 4.0,
+        "amount": 3.29
+      }
+    ]
+  },
+  "workbook": "fixture.xlsx",
+  "categorized_at": "2026-09-01T10:05:00",
+  "model": "claude-opus-5-5",
+  "input_tokens": 1,
+  "output_tokens": 1,
+  "rule_matches": 0,
+  "edited": false,
+  "expenses": [
+    {
+      "date": "2026-08-02",
+      "vendor": "Loblaws",
+      "amount": 82.15,
+      "category": "Groceries",
+      "likely_shared": false,
+      "statement_description": "LOBLAWS #123 TORONTO",
+      "review_note": null,
+      "categorized_by": "agent"
+    },
+    {
+      "date": "2026-08-03",
+      "vendor": "Green P",
+      "amount": 12.0,
+      "category": "Public transportation",
+      "likely_shared": false,
+      "statement_description": "GREEN P PARKING 55",
+      "review_note": null,
+      "categorized_by": "agent"
+    },
+    {
+      "date": "2026-08-05",
+      "vendor": "Spotify",
+      "amount": 11.99,
+      "category": "Subscription",
+      "likely_shared": false,
+      "statement_description": "SPOTIFY P1234",
+      "review_note": null,
+      "categorized_by": "agent"
+    },
+    {
+      "date": "2026-08-07",
+      "vendor": "Gusto 101",
+      "amount": 84.6,
+      "category": "Restaurant",
+      "likely_shared": false,
+      "statement_description": "GUSTO 101 TORONTO",
+      "review_note": null,
+      "categorized_by": "agent"
+    },
+    {
+      "date": "2026-08-09",
+      "vendor": "Loblaws",
+      "amount": -20.0,
+      "category": "Groceries",
+      "likely_shared": false,
+      "statement_description": "LOBLAWS REFUND",
+      "review_note": null,
+      "categorized_by": "agent"
+    },
+    {
+      "date": "2026-08-10",
+      "vendor": "Shell",
+      "amount": 50.0,
+      "category": "Gas",
+      "likely_shared": false,
+      "statement_description": "SHELL CAR WASH",
+      "review_note": null,
+      "categorized_by": "agent"
+    },
+    {
+      "date": "2026-08-11",
+      "vendor": "Amazon",
+      "amount": 40.0,
+      "category": "Electronics",
+      "likely_shared": false,
+      "statement_description": "AMZN MKTP CA",
+      "review_note": null,
+      "categorized_by": "agent",
+      "app_category": "Entertainment"
+    },
+    {
+      "date": "",
+      "vendor": "Mystery",
+      "amount": 5.0,
+      "category": "Restaurant",
+      "likely_shared": false,
+      "statement_description": "NO DATE ROW",
+      "review_note": null,
+      "categorized_by": "agent"
+    },
+    {
+      "date": "2026-08-02",
+      "vendor": "Loblaws",
+      "amount": 82.15,
+      "category": "Groceries",
+      "likely_shared": false,
+      "statement_description": "LOBLAWS #123 TORONTO",
+      "review_note": null,
+      "categorized_by": "agent"
+    }
+  ],
+  "income": [
+    {
+      "date": "2026-08-15",
+      "source": "Acme",
+      "amount": 2500.0,
+      "category": "Job Acme",
+      "statement_description": "PAYROLL ACME",
+      "review_note": null,
+      "categorized_by": "agent"
+    },
+    {
+      "date": "2026-08-20",
+      "source": "Bank",
+      "amount": -10.0,
+      "category": "Other",
+      "statement_description": "MISC DEBIT",
+      "review_note": null,
+      "categorized_by": "agent"
+    }
+  ],
+  "skipped": [
+    {
+      "date": "2026-08-12",
+      "statement_description": "PAYMENT THANK YOU",
+      "amount": 500.0,
+      "reason": "payment to this card",
+      "categorized_by": "agent"
+    }
+  ]
+}

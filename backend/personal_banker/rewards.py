@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 from . import ledger
 from .ledger import INCOME_CATEGORIES, RewardRule, Transaction
-from .store import Library
+from .datastore import DataStore
 
 # Rent can't realistically go on a card, and fees and interest are charged by the card itself.
 NO_REWARDS = {"Housing", "Fees & interest", *INCOME_CATEGORIES}
@@ -92,15 +92,16 @@ class StatementRewards:
     reported: ledger.ReportedRewards | None
 
 
-def statement_rewards(library: Library) -> list[StatementRewards]:
-    """Every categorized statement on one of the user's cards, with what it says it earned (if it prints it)."""
+def statement_rewards(store: DataStore) -> list[StatementRewards]:
+    """Every categorized statement on one of the user's cards, newest first, with what it says it earned (if it prints it)."""
+    records = {s.id: s for s in store.statements()}
     result = []
-    for doc in library.documents():
-        if (budget := library.budget(doc)) is None:
+    for doc in store.files.documents():
+        if (statement := records.get(doc.id)) is None or not statement.categorized:
             continue
-        match, card_id = ledger.statement_match(library, budget)
+        match, card_id = ledger.statement_match(store, statement)
         if match != "matched" or card_id is None:
             continue
-        start, end = ledger.statement_period(budget)
-        result.append(StatementRewards(doc.id, doc.name.removesuffix(".pdf"), card_id, start, end, ledger.statement_rewards(budget)))
+        start, end = ledger.statement_period(statement)
+        result.append(StatementRewards(doc.id, doc.name.removesuffix(".pdf"), card_id, start, end, ledger.statement_rewards(statement)))
     return result

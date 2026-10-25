@@ -43,3 +43,9 @@ paddlepaddle-gpu = { index = "paddle-cu129" }
 name = "paddle-cu129"
 url = "https://www.paddlepaddle.org.cn/packages/stable/cu129/"
 explicit = true
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+]

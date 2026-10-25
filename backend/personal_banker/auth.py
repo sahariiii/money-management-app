@@ -6,7 +6,8 @@ key (pk_test_<base64 of "<frontend API host>$">): the app's
 EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY from the shared root .env. CLERK_PUBLISHABLE_KEY,
 when set, takes precedence (for running the backend without the app's .env).
 
-PERSONAL_BANKER_API_TOKEN, when set, is accepted too, for curl and scripts.
+PERSONAL_BANKER_API_TOKEN, when set, is accepted too, for curl and scripts. Its caller
+is PERSONAL_BANKER_API_TOKEN_USER (a Clerk user id, to act as that user) or "api-token".
 CLERK_ALLOWED_USER_IDS (comma-separated Clerk user ids) limits the API to those
 users; without it, anyone who can sign in to the Clerk instance gets in.
 With neither key nor token set, the API is open.
@@ -23,6 +24,7 @@ import jwt
 CLERK_KEY_ENV = "CLERK_PUBLISHABLE_KEY"
 APP_CLERK_KEY_ENV = "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY"
 TOKEN_ENV = "PERSONAL_BANKER_API_TOKEN"
+TOKEN_USER_ENV = "PERSONAL_BANKER_API_TOKEN_USER"
 ALLOWED_USERS_ENV = "CLERK_ALLOWED_USER_IDS"
 
 # A browser session's token names the page's origin in azp; the same origins CORS allows.
@@ -76,14 +78,17 @@ def is_open() -> bool:
 
 
 def authorize(token: str | None) -> str:
-    """Who is calling: a Clerk user id, "api-token", or "anyone" when auth isn't set up. Raises AuthError."""
+    """Who is calling: a Clerk user id, the static token's user, or "anyone" when auth isn't set up. Raises AuthError.
+
+    Each caller has their own data (datastore.Storage), so this id decides whose records a request sees.
+    """
     if is_open():
         return "anyone"
     if not token:
         raise AuthError(401, "Sign in first: the request had no session token.")
     static = os.environ.get(TOKEN_ENV)
     if static and secrets.compare_digest(token.encode(), static.encode()):
-        return "api-token"
+        return os.environ.get(TOKEN_USER_ENV) or "api-token"
     if not (key := publishable_key()):
         raise AuthError(401, "Wrong API token.")
     try:

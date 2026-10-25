@@ -1,5 +1,7 @@
 """Budget categorization: transcribed statement Markdown -> expense / income rows for the budget workbook."""
 
+import os
+
 from .agent import (
     CategorizationResult,
     account_record,
@@ -10,13 +12,16 @@ from .agent import (
     summary_record,
 )
 from .export import to_xlsx
-from .workbook import BudgetSetup, RulesError, load_budget_setup
+from .workbook import BudgetSetup, Category, PastEntry, RulesError, load_budget_setup
 
-DEFAULT_WORKBOOK ="data/BudgetTracking_Setareh.xlsx"
+# Optional: without a workbook here, statements are categorized into the app's own categories.
+DEFAULT_WORKBOOK = os.environ.get("PERSONAL_BANKER_WORKBOOK", "data/BudgetTracking_Setareh.xlsx")
 
 __all__ = [
     "DEFAULT_WORKBOOK",
     "BudgetSetup",
+    "Category",
+    "PastEntry",
     "CategorizationResult",
     "RulesError",
     "account_record",

@@ -17,6 +17,7 @@ from personal_banker.streamlit_support import (
     credentials_notice,
     get_client,
     get_library,
+    get_store,
     has_credentials,
 )
 
@@ -152,7 +153,7 @@ if run or auto_run:
             progress.progress(done / len(todo), text=f"Extracted {done} of {len(todo)} pages")
 
         outcome = process_document(
-            library,
+            get_store(),
             doc,
             engine,
             client,

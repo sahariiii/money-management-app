@@ -5,14 +5,13 @@ a period, a card's spending, the transactions behind a number) and answers in
 plain text for a phone chat bubble, optionally with one headline number
 (show_headline) that the app shows as a small card under the answer.
 
-The conversation is kept in library/chat.json as the app shows it. Earlier turns
+The conversation is kept in the user's DataStore as the app shows it. Earlier turns
 go back to Claude as plain text, without the tool calls behind them, so a long
 history stays small and each answer works from fresh numbers.
 """
 
 import json
 import secrets
-import threading
 from collections import defaultdict
 from datetime import date, datetime, timezone
 from typing import Literal
@@ -22,9 +21,10 @@ from anthropic import beta_tool
 from anthropic.lib.tools import ToolError
 
 from . import ledger, planning, rewards
-from .ledger import APP_CATEGORIES, CASH_CARD_ID, DUMMY_CARD, INCOME_CATEGORIES, AppModel, Transaction
+from .datastore import DataStore
+from .ledger import APP_CATEGORIES, CASH_CARD_ID, DUMMY_CARD, INCOME_CATEGORIES, Transaction
 from .llm import FALLBACK_BETA, MODEL
-from .store import Library
+from .records import ChatMessage, ChatSummary, Tone
 
 # Someone is waiting on the reply: medium is quick enough and handles a few rounds of lookups well.
 EFFORT = "medium"
@@ -34,8 +34,6 @@ MAX_ITERATIONS = 12
 # Earlier messages sent back with a new question.
 HISTORY_MESSAGES = 30
 MAX_TRANSACTIONS = 200
-
-Tone = Literal["primary", "income", "expense", "warning"]
 
 SYSTEM_PROMPT = f"""\
 You are the money assistant in Personal Banker, a budgeting app for one person in \
@@ -98,36 +96,19 @@ call show_headline with it once, just before you answer. Never write more than t
 last 4 digits of a card or account number."""
 
 
-class ChatSummary(AppModel):
-    value: str
-    label: str
-    tone: Tone | None = None
-
-
-class ChatMessage(AppModel):
-    """ChatMessage in src/types.ts."""
-
-    id: str
-    role: Literal["user", "assistant"]
-    text: str
-    created_at: str
-    summary: ChatSummary | None = None
+__all__ = ["ChatMessage", "ChatSummary"]  # re-exported from records
 
 
 class AssistantError(RuntimeError):
     """Claude couldn't answer (a refusal or a cut-off reply)."""
 
 
-_chat_lock = threading.Lock()
+def history(store: DataStore) -> list[ChatMessage]:
+    return store.chat()
 
 
-def history(library: Library) -> list[ChatMessage]:
-    return [ChatMessage.model_validate(m) for m in library.chat()]
-
-
-def clear(library: Library) -> None:
-    with _chat_lock:
-        library.save_chat([])
+def clear(store: DataStore) -> None:
+    store.clear_chat()
 
 
 def _message(role: Literal["user", "assistant"], text: str, summary: ChatSummary | None = None) -> ChatMessage:
@@ -155,10 +136,10 @@ def _money(amount: float) -> float:
     return round(amount, 2)
 
 
-def _make_tools(library: Library, shown: list[ChatSummary]) -> list:
+def _make_tools(store: DataStore, shown: list[ChatSummary]) -> list:
     """The tools for one question. The ledger is read once: it doesn't change while Claude answers."""
-    txs: list[Transaction] = ledger.transactions(library)
-    cards = ledger.cards(library)
+    txs: list[Transaction] = ledger.transactions(store)
+    cards = ledger.cards(store)
     names = {c.id: f"{c.nickname} (•••• {c.last4})" for c in cards if not c.is_placeholder}
     names[DUMMY_CARD.id] = DUMMY_CARD.nickname
     names[CASH_CARD_ID] = "Cash"
@@ -189,7 +170,7 @@ def _make_tools(library: Library, shown: list[ChatSummary]) -> list:
         category without its own rule; cap is the monthly spend that earns that rate (null: no cap).
         For cashback actually earned, use the cashback tool.
         """
-        rules = ledger.reward_rules(library)
+        rules = ledger.reward_rules(store)
         dates = sorted(t.date for t in txs)
         return json.dumps(
             {
@@ -346,8 +327,8 @@ def _make_tools(library: Library, shown: list[ChatSummary]) -> list:
         """
         start, end = _day(start_date, "start_date"), _day(end_date, "end_date")
         check_card(card_id)
-        rules = ledger.reward_rules(library)
-        statements = rewards.statement_rewards(library)
+        rules = ledger.reward_rules(store)
+        statements = rewards.statement_rewards(store)
         reported = {s.statement_id for s in statements if s.reported}
 
         def period(s: rewards.StatementRewards) -> tuple[str | None, str | None]:
@@ -404,7 +385,7 @@ def _make_tools(library: Library, shown: list[ChatSummary]) -> list:
         for t in txs:
             if not t.is_income and t.date.startswith(first):
                 spent[t.category] += t.amount
-        saved_goal = planning.goal(library)
+        saved_goal = planning.goal(store)
         return json.dumps(
             {
                 "month": first,
@@ -416,7 +397,7 @@ def _make_tools(library: Library, shown: list[ChatSummary]) -> list:
                         "left": _money(b.monthly_limit - spent[b.category]),
                         "percent_used": round(100 * spent[b.category] / b.monthly_limit),
                     }
-                    for b in planning.budgets(library)
+                    for b in planning.budgets(store)
                 ],
                 "savings_goal": planning.goal_progress(saved_goal, txs, date.today()) if saved_goal else None,
             },
@@ -460,14 +441,14 @@ def _past_turns(messages: list[ChatMessage]) -> list[dict]:
     return turns
 
 
-def ask(client: anthropic.Anthropic, library: Library, question: str) -> ChatMessage:
+def ask(client: anthropic.Anthropic, store: DataStore, question: str) -> ChatMessage:
     """Answers the question, saves it and the answer to the chat, and returns the answer.
 
     Raises AssistantError when Claude can't answer, and anthropic.APIError when the call fails;
     neither saves anything, so the question can be asked again.
     """
     shown: list[ChatSummary] = []
-    messages = [*_past_turns(history(library)), {"role": "user", "content": question}]
+    messages = [*_past_turns(history(store)), {"role": "user", "content": question}]
     runner = client.beta.messages.tool_runner(
         model=MODEL,
         max_tokens=MAX_TOKENS,
@@ -478,7 +459,7 @@ def ask(client: anthropic.Anthropic, library: Library, question: str) -> ChatMes
         # The cached prefix covers the tools, the instructions and the conversation so far.
         cache_control={"type": "ephemeral"},
         system=[{"type": "text", "text": SYSTEM_PROMPT}, {"type": "text", "text": _context(date.today())}],
-        tools=_make_tools(library, shown),
+        tools=_make_tools(store, shown),
         messages=messages,
     )
     final = runner.until_done()
@@ -492,6 +473,5 @@ def ask(client: anthropic.Anthropic, library: Library, question: str) -> ChatMes
         raise AssistantError(f"I couldn't put an answer together (stop reason: {final.stop_reason}). Try again.")
 
     reply = _message("assistant", text, shown[0] if shown else None)
-    with _chat_lock:
-        library.save_chat([*library.chat(), _message("user", question).model_dump(), reply.model_dump()])
+    store.add_chat_messages([_message("user", question), reply])
     return reply

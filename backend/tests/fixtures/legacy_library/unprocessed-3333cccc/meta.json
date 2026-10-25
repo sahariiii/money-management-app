@@ -1,0 +1,15 @@
+{
+  "id": "unprocessed-3333cccc",
+  "name": "unprocessed.pdf",
+  "sha256": "3333cccc00000000000000000000000000000000000000000000000000000000",
+  "added": "2026-10-20T10:00:00",
+  "pages": [
+    {
+      "file": "pages/001.png",
+      "media_type": "image/png",
+      "width": 10,
+      "height": 10
+    }
+  ],
+  "original_name": null
+}
