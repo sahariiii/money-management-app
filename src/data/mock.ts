@@ -7,6 +7,7 @@ import type {
   Budget,
   Card,
   Category,
+  ChatMessage,
   ISODate,
   RecurringBill,
   RewardRule,
@@ -207,9 +208,37 @@ function buildTransactions(): Transaction[] {
     drafts.push({ date: day('2026-10', d), amount, rawDescription, merchant, category: 'Food', cardId, isIncome: false });
   }
 
-  return drafts
+  for (const r of RETURNS) {
+    const base = { rawDescription: r.raw, merchant: r.merchant, category: 'Shopping' as const, cardId: VISA };
+    drafts.push({ ...base, date: r.bought, amount: r.paid, isIncome: false });
+    drafts.push({ ...base, date: r.returned, amount: r.back, isIncome: true });
+  }
+
+  const txs = drafts
     .sort((a, b) => a.date.localeCompare(b.date))
     .map((t, i) => ({ ...t, id: `tx_${String(i + 1).padStart(4, '0')}`, currency: 'CAD' }));
+  return linkReturns(txs);
+}
+
+// Returns: a Winners purchase returned in full, a Canadian Tire one partly. They come after the
+// random patterns, so the rest of the demo stays the same.
+const RETURNS = [
+  { merchant: 'Winners', raw: 'WINNERS #212', bought: '2026-10-04', returned: '2026-10-09', paid: 79.99, back: 79.99 },
+  { merchant: 'Canadian Tire', raw: 'CDN TIRE STORE #00123', bought: '2026-09-12', returned: '2026-09-20', paid: 89.97, back: 29.99 },
+];
+
+/** Links each RETURNS refund to its purchase, as the backend's link_refunds does for real statements. */
+function linkReturns(txs: Transaction[]): Transaction[] {
+  const find = (merchant: string, date: ISODate, amount: number, isIncome: boolean) =>
+    txs.find((t) => t.merchant === merchant && t.date === date && t.amount === amount && t.isIncome === isIncome)!;
+  for (const r of RETURNS) {
+    const purchase = find(r.merchant, r.bought, r.paid, false);
+    const refund = find(r.merchant, r.returned, r.back, true);
+    refund.refundOf = purchase.id;
+    purchase.refundedAmount = r.back;
+    purchase.refundIds = [refund.id];
+  }
+  return txs;
 }
 
 export const transactions: Transaction[] = buildTransactions();
@@ -248,6 +277,47 @@ const octFoodSpent = transactions
   .filter((t) => t.category === 'Food' && t.date.startsWith('2026-10'))
   .reduce((sum, t) => sum + t.amount, 0);
 const foodLimit = budgets.find((b) => b.category === 'Food')!.monthlyLimit;
+
+// ---------------------------------------------------------------------------
+// Earlier conversations with the assistant, so the chat history isn't empty.
+
+const msg = (id: string, role: ChatMessage['role'], createdAt: string, text: string, summary?: ChatMessage['summary']): ChatMessage => ({
+  id,
+  role,
+  createdAt,
+  text,
+  ...(summary && { summary }),
+});
+
+export const chats: { id: string; title: string; messages: ChatMessage[] }[] = [
+  {
+    id: 'chat_demo_rogers',
+    title: 'Why my Rogers bill jumped',
+    messages: [
+      msg('msg_demo_1', 'user', '2026-10-21T18:02:00Z', 'Why was my phone bill so high this month?'),
+      msg(
+        'msg_demo_2',
+        'assistant',
+        '2026-10-21T18:02:20Z',
+        'Rogers charged $200.00 on October 10, up from the usual $65.00 in August and September. Nothing else on your phone and internet bills changed. It is worth calling Rogers to ask what the extra $135.00 is for.',
+        { value: '+$135.00', label: 'Rogers above usual in October', tone: 'expense' },
+      ),
+    ],
+  },
+  {
+    id: 'chat_demo_groceries',
+    title: 'Best card for groceries',
+    messages: [
+      msg('msg_demo_3', 'user', '2026-10-12T09:15:00Z', 'Which card should I use for groceries?'),
+      msg(
+        'msg_demo_4',
+        'assistant',
+        '2026-10-12T09:15:18Z',
+        'Your CIBC Dividend Visa Infinite pays 4% on groceries, and your debit card pays nothing. Most of your grocery runs (Costco, Loblaws, No Frills) went on debit, so switching them to the Visa would earn about $30 a month.',
+      ),
+    ],
+  },
+];
 
 export const alerts: Alert[] = [
   {

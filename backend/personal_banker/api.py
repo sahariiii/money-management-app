@@ -529,32 +529,65 @@ class ChatQuestion(AppModel):
     text: str = Field(min_length=1, max_length=2000)
 
 
-@api.get("/chat")
-def get_chat(store: Store) -> list[assistant.ChatMessage]:
-    """The conversation, oldest first."""
-    return assistant.history(store)
+class ChatRename(AppModel):
+    title: str = Field(min_length=1, max_length=200)
 
 
-@api.post("/chat")
-def send_chat(question: ChatQuestion, store: Store) -> assistant.ChatMessage:
-    """Asks the assistant; returns its answer once Claude is done, which can take a while. Both are saved."""
+@api.get("/chats")
+def get_chats(store: Store) -> list[assistant.ChatThread]:
+    """Every conversation with the assistant, the latest active first."""
+    return assistant.threads(store)
+
+
+@api.get("/chats/{chat_id}")
+def get_chat(chat_id: str, store: Store) -> assistant.ChatThreadDetail:
+    """A conversation with its messages, oldest first."""
+    if (found := assistant.thread(store, chat_id)) is None:
+        raise HTTPException(404, "Conversation not found.")
+    return found
+
+
+def _ask(store: DataStore, question: ChatQuestion, chat_id: str | None) -> assistant.ChatReply:
+    """Asks the assistant and returns its answer once Claude is done, which can take a while. Both are saved."""
     if not has_api_key():
         raise HTTPException(503, "The assistant uses Claude, and no Anthropic API key is set on the server.")
-    with start_trace("chat", input={"question": question.text}) as trace:
+    with start_trace("chat", input={"question": question.text, "chat_id": chat_id}) as trace:
         try:
-            reply = assistant.ask(make_client(), store, question.text.strip())
+            reply = assistant.ask(make_client(), store, question.text.strip(), chat_id)
+        except assistant.UnknownChat as e:
+            raise HTTPException(404, "Conversation not found.") from e
         except assistant.AssistantError as e:
             raise HTTPException(422, str(e)) from e
         except anthropic.APIError as e:
             log.exception("The assistant's Claude call failed")
             raise HTTPException(502, f"The assistant couldn't reach Claude: {e}") from e
-        trace.log(output={"text": reply.text, "summary": reply.summary.model_dump() if reply.summary else None})
+        m = reply.message
+        trace.log(output={"text": m.text, "summary": m.summary.model_dump() if m.summary else None, "title": reply.thread.title})
     return reply
 
 
-@api.delete("/chat", status_code=204)
-def clear_chat(store: Store) -> Response:
-    assistant.clear(store)
+@api.post("/chats")
+def start_chat(question: ChatQuestion, store: Store) -> assistant.ChatReply:
+    """Starts a conversation with its first question; it is only saved once the answer is in."""
+    return _ask(store, question, None)
+
+
+@api.post("/chats/{chat_id}/messages")
+def send_chat(chat_id: str, question: ChatQuestion, store: Store) -> assistant.ChatReply:
+    return _ask(store, question, chat_id)
+
+
+@api.patch("/chats/{chat_id}")
+def rename_chat(chat_id: str, body: ChatRename, store: Store) -> assistant.ChatThread:
+    if (renamed := assistant.rename(store, chat_id, body.title)) is None:
+        raise HTTPException(404, "Conversation not found.")
+    return renamed
+
+
+@api.delete("/chats/{chat_id}", status_code=204)
+def delete_chat(chat_id: str, store: Store) -> Response:
+    if not assistant.delete(store, chat_id):
+        raise HTTPException(404, "Conversation not found.")
     return Response(status_code=204)
 
 

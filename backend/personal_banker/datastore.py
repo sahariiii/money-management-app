@@ -13,7 +13,8 @@ nothing else reads or writes their records. JsonDataStore keeps them as JSON fil
         cards.json                   cards (in the order added) and their reward rules
         merchant_rules.json          merchant -> app category ("always categorize" in the app)
         plan.json                    monthly budgets and the savings goal
-        chat.json                    the conversation with the assistant
+        chats/<chat id>.json         one conversation with the assistant: title and messages (chat.json,
+                                     the single conversation before there were several, becomes one)
         receipts/<scan id>.json/.jpg scanned receipts and their photos
         memory.json                  the assistant's long-term memory (memory.py)
 
@@ -32,6 +33,7 @@ from .records import (
     Budget,
     Card,
     ChatMessage,
+    ChatRecord,
     RewardRule,
     SavingsGoal,
     ScanRecord,
@@ -96,9 +98,23 @@ class DataStore(Protocol):
     def delete_scan(self, scan_id: str) -> None: ...
 
     # --- Assistant chat ----------------------------------------------------------
-    def chat(self) -> list[ChatMessage]: ...
-    def add_chat_messages(self, messages: list[ChatMessage]) -> None: ...
-    def clear_chat(self) -> None: ...
+    # Ids are checked by the caller (assistant.is_chat_id) before they reach a path.
+    def chats(self) -> list[ChatRecord]:
+        """Every conversation, in no particular order."""
+        ...
+    def chat(self, chat_id: str) -> ChatRecord | None: ...
+    def save_chat(self, chat: ChatRecord) -> None:
+        """Adds or replaces the conversation."""
+        ...
+    def add_chat_messages(self, chat_id: str, messages: list[ChatMessage]) -> ChatRecord | None:
+        """Appends to the conversation as stored now (it may have been renamed meanwhile); None if it is gone."""
+        ...
+    def rename_chat(self, chat_id: str, title: str) -> ChatRecord | None: ...
+    def delete_chat(self, chat_id: str) -> bool: ...
+    def legacy_chat(self) -> list[ChatMessage] | None:
+        """The one conversation kept before there were several; None once moved (or if there never was one)."""
+        ...
+    def remove_legacy_chat(self) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -308,17 +324,52 @@ class JsonDataStore:
 
     # --- Assistant chat ----------------------------------------------------------
 
-    def chat(self) -> list[ChatMessage]:
-        return [ChatMessage.model_validate(m) for m in read_json(self._path("chat.json"), {"messages": []})["messages"]]
+    def _chat_path(self, chat_id: str) -> Path:
+        return self._path("chats") / f"{chat_id}.json"
 
-    def add_chat_messages(self, messages: list[ChatMessage]) -> None:
-        with self._lock:
-            saved = read_json(self._path("chat.json"), {"messages": []})["messages"]
-            write_json(self._path("chat.json"), {"messages": [*saved, *(m.model_dump() for m in messages)]})
+    def chats(self) -> list[ChatRecord]:
+        folder = self._path("chats")
+        return [ChatRecord.model_validate(read_json(p, None)) for p in folder.glob("*.json")] if folder.exists() else []
 
-    def clear_chat(self) -> None:
+    def chat(self, chat_id: str) -> ChatRecord | None:
+        found = read_json(self._chat_path(chat_id), None)
+        return ChatRecord.model_validate(found) if found else None
+
+    def save_chat(self, chat: ChatRecord) -> None:
         with self._lock:
-            write_json(self._path("chat.json"), {"messages": []})
+            write_json(self._chat_path(chat.id), chat.model_dump())
+
+    def add_chat_messages(self, chat_id: str, messages: list[ChatMessage]) -> ChatRecord | None:
+        with self._lock:
+            if (chat := self.chat(chat_id)) is None:
+                return None
+            chat.messages = [*chat.messages, *messages]
+            self.save_chat(chat)
+        return chat
+
+    def rename_chat(self, chat_id: str, title: str) -> ChatRecord | None:
+        with self._lock:
+            if (chat := self.chat(chat_id)) is None:
+                return None
+            chat.title = title
+            self.save_chat(chat)
+        return chat
+
+    def delete_chat(self, chat_id: str) -> bool:
+        with self._lock:
+            path = self._chat_path(chat_id)
+            if not path.exists():
+                return False
+            path.unlink()
+        return True
+
+    def legacy_chat(self) -> list[ChatMessage] | None:
+        found = read_json(self._path("chat.json"), None)
+        return [ChatMessage.model_validate(m) for m in found["messages"]] if found is not None else None
+
+    def remove_legacy_chat(self) -> None:
+        with self._lock:
+            self._path("chat.json").unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +416,7 @@ class Storage:
         """The library still holds data from before it was kept per user (see migrate.py)."""
         if (self.root / ".migrated").exists():
             return False
-        legacy = ("cards.json", "merchant_rules.json", "receipts.json", "chat.json", "plan.json")
+        legacy = ("cards.json", "merchant_rules.json", "receipts.json", "chat.json", "chats", "plan.json")
         return any((self.root / name).exists() for name in legacy) or any(self.root.glob("*/meta.json"))
 
 

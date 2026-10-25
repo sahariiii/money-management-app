@@ -1,4 +1,7 @@
-"""Per-user records: stable ids, duplicates across statements, job status, the workbook fallback, memory."""
+"""Per-user records: stable ids, duplicates across statements, job status, the workbook fallback, memory, conversations."""
+
+import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -148,6 +151,43 @@ def test_memory_store(storage):
     assert memory.forget(first.id) and [m.id for m in memory.memories()] == [goal.id]
     with pytest.raises(ValueError):
         memory.remember("   ")
+
+
+def test_conversations_are_per_user(storage, client_as, monkeypatch):
+    # A user's chat.json from before there were several conversations becomes the first of them.
+    store = storage.store("user_a")
+    old = [
+        {"id": "msg_1", "role": "user", "text": "How much on food in August?", "created_at": "2026-09-01T10:00:00+00:00"},
+        {"id": "msg_2", "role": "assistant", "text": "$120.00.", "created_at": "2026-09-01T10:00:05+00:00"},
+    ]
+    (store.folder / "chat.json").write_text(json.dumps({"messages": old}))
+    client = client_as(storage, "user_a")
+    [moved] = client.get("/api/chats").json()
+    assert moved["title"] == "How much on food in August?" and moved["messageCount"] == 2
+    assert not (store.folder / "chat.json").exists()
+
+    # Claude stands in: it answers without calling a tool.
+    answer = SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="You spent $80.00.")])
+    runner = SimpleNamespace(until_done=lambda: answer)
+    client_stub = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(tool_runner=lambda **_: runner)))
+    monkeypatch.setattr(api, "make_client", lambda: client_stub)
+    monkeypatch.setattr(api, "has_api_key", lambda: True)
+
+    new = client.post("/api/chats", json={"text": "And in September?"}).json()
+    assert new["message"]["text"] == "You spent $80.00." and new["thread"]["title"] == "And in September?"
+    more = client.post(f"/api/chats/{moved['id']}/messages", json={"text": "Thanks"}).json()
+    assert more["thread"]["messageCount"] == 4
+    assert client.post("/api/chats/chat_000000000000/messages", json={"text": "Hi"}).status_code == 404
+
+    assert client.patch(f"/api/chats/{new['thread']['id']}", json={"title": "September food"}).json()["title"] == "September food"
+    assert sorted(t["title"] for t in client.get("/api/chats").json()) == ["How much on food in August?", "September food"]
+    assert client_as(storage, "user_b").get("/api/chats").json() == []
+    assert client_as(storage, "user_b").get(f"/api/chats/{moved['id']}").status_code == 404
+
+    client = client_as(storage, "user_a")
+    assert client.delete(f"/api/chats/{moved['id']}").status_code == 204
+    assert [t["id"] for t in client.get("/api/chats").json()] == [new["thread"]["id"]]
+    assert client.delete(f"/api/chats/{moved['id']}").status_code == 404
 
 
 def test_migration_refuses_a_user_with_data(legacy_storage):

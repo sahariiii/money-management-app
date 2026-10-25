@@ -116,6 +116,14 @@ class ChatMessage(AppModel):
     summary: ChatSummary | None = None
 
 
+class ChatRecord(BaseModel):
+    """One conversation with the assistant: its title and its messages, oldest first."""
+
+    id: str
+    title: str
+    messages: list[ChatMessage] = []
+
+
 # ---------------------------------------------------------------------------
 # Statements and transactions
 

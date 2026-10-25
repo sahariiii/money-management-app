@@ -78,6 +78,14 @@ export type Transaction = {
   statementId?: string | null;
   /** A scanned receipt saved with it; load it with getReceipt. */
   receiptId?: string | null;
+  // Returns (lib/refunds.ts). A refund is money in under a spending category: money back for a
+  // purchase, never income.
+  /** On a refund: the purchase it returns, when the ledger has it. */
+  refundOf?: string | null;
+  /** On a purchase: how much of it came back in refunds. */
+  refundedAmount?: number;
+  /** On a purchase: the refunds that returned it, oldest first. */
+  refundIds?: string[];
 };
 
 /** cardId of an expense paid in cash, or with anything that isn't one of the user's cards. */
@@ -122,6 +130,24 @@ export type ChatMessage = {
   /** Optional headline number shown as a small card under an assistant answer. */
   summary?: { value: string; label: string; tone?: 'primary' | 'income' | 'expense' | 'warning' };
 };
+
+/** A conversation with the assistant, as the chat history lists it. */
+export type ChatThread = {
+  id: string;
+  /** Claude names it on the first question. */
+  title: string;
+  createdAt: string;
+  /** When its latest message was added. */
+  updatedAt: string;
+  messageCount: number;
+  /** The start of its latest answer. */
+  preview: string;
+};
+
+export type ChatThreadDetail = ChatThread & { messages: ChatMessage[] };
+
+/** What asking returns: the answer, and its conversation as the history now lists it. */
+export type ChatReply = { thread: ChatThread; message: ChatMessage };
 
 // ---- API shapes (computed, not stored) ----
 

@@ -17,9 +17,9 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from . import ledger
+from . import assistant, ledger
 from .datastore import DEFAULT_ROOT, DataStore, Storage, read_json, write_json
-from .records import Budget, Card, ChatMessage, RewardRule, SavingsGoal, ScanRecord, TransactionRecord
+from .records import Budget, Card, ChatMessage, ChatRecord, RewardRule, SavingsGoal, ScanRecord, TransactionRecord
 from .store import Library
 
 
@@ -32,7 +32,7 @@ def migrate_legacy(legacy_root: Path, store: DataStore) -> dict[str, int]:
     if store.statements() or store.transactions() or store.cards():
         raise MigrationError(f"{store.user_id} already has data; refusing to mix the old library into it.")
     legacy = Library(legacy_root)
-    counts = {"statements": 0, "transactions": 0, "cards": 0, "receipt scans": 0, "chat messages": 0}
+    counts = {"statements": 0, "transactions": 0, "cards": 0, "receipt scans": 0, "conversations": 0}
 
     # Oldest first, so a row two statements share belongs to the one that brought it first.
     for doc in reversed(legacy.documents()):
@@ -87,9 +87,14 @@ def migrate_legacy(legacy_root: Path, store: DataStore) -> dict[str, int]:
     if plan.get("goal"):
         store.save_goal(SavingsGoal.model_validate(plan["goal"]))
 
-    messages = [ChatMessage.model_validate(m) for m in read_json(legacy_root / "chat.json", {"messages": []})["messages"]]
-    store.add_chat_messages(messages)
-    counts["chat messages"] = len(messages)
+    # Conversations in chats/, and chat.json: the one conversation kept before there were several.
+    chats = legacy_root / "chats"
+    conversations = [ChatRecord.model_validate(read_json(p, None)) for p in sorted(chats.glob("*.json"))] if chats.exists() else []
+    if messages := [ChatMessage.model_validate(m) for m in read_json(legacy_root / "chat.json", {"messages": []})["messages"]]:
+        conversations.append(assistant.legacy_conversation(messages))
+    for chat in conversations:
+        store.save_chat(chat)
+    counts["conversations"] = len(conversations)
     return counts
 
 

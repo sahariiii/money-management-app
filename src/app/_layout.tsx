@@ -55,6 +55,7 @@ function RootStack() {
         <Stack.Screen name="add-card" options={{ presentation: 'modal', title: 'Add card' }} />
         <Stack.Screen name="edit-card/[id]" options={{ presentation: 'modal', title: 'Edit card' }} />
         <Stack.Screen name="savings-goal" options={{ presentation: 'modal', title: 'Savings goal' }} />
+        <Stack.Screen name="chat-history" options={{ presentation: 'modal', title: 'Chats' }} />
       </Stack.Protected>
     </Stack>
   );

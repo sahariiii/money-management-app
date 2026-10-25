@@ -137,6 +137,10 @@ class Transaction(AppModel):
     source: Literal["statement", "receipt"] = "statement"
     statement_id: str | None = None  # the statement (document id) it is on; None for receipt expenses
     receipt_id: str | None = None  # a scanned receipt saved with it (see "Scanned receipts" below)
+    # Returns (see link_refunds): on a refund, the purchase it returns; on a purchase, what came back.
+    refund_of: str | None = None
+    refunded_amount: float = 0.0
+    refund_ids: list[str] = []
 
 
 class CategoryUpdate(AppModel):
@@ -337,6 +341,76 @@ def _statement_cards(store: DataStore, saved: list[Card]) -> dict[str, str]:
     return {s.id: _card_id(s.account, saved) for s in store.statements()}
 
 
+# ---------------------------------------------------------------------------
+# Returns and refunds
+#
+# Money back from a store is a refund, not income: the categorizer records it as a
+# negative expense, so it shows as money in under the spending category it came back
+# to. Each refund is linked to the purchase it returns, and spending counts only what
+# was kept (net_spending). Must match src/lib/refunds.ts and linkRefunds there.
+
+# A refund returns a purchase from the same merchant made at most this many days before it.
+RETURN_DAYS = 120
+
+
+def is_refund(t: Transaction) -> bool:
+    """Money back for a purchase (a return, a rebate, a reversed charge): money in under a spending category."""
+    return t.is_income and t.category not in INCOME_CATEGORIES
+
+
+def net_spending(t: Transaction) -> float:
+    """What a transaction adds to spending: a purchase less what came back for it. A refund the
+    ledger couldn't link to its purchase comes off spending on its own date; linked refunds and
+    income add nothing."""
+    if not t.is_income:
+        return t.amount - t.refunded_amount
+    return -t.amount if is_refund(t) and t.refund_of is None else 0.0
+
+
+def _merchant_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", name.casefold())
+
+
+def link_refunds(txs: list[Transaction]) -> list[Transaction]:
+    """Links each refund to the purchase it returns, oldest refund first.
+
+    The purchase is from the same merchant, on or before the refund's date and at most
+    RETURN_DAYS before it, with at least the refund's amount not yet returned. A whole return
+    (exactly what is left of the purchase) wins, then one on the same card, then the latest.
+    """
+    purchases = [t for t in txs if not t.is_income]
+    left = {p.id: p.amount for p in purchases}
+    refund_of: dict[str, str] = {}
+    refunds: dict[str, list[Transaction]] = {}
+    for r in sorted((t for t in txs if is_refund(t)), key=lambda t: (t.date, t.id)):
+        key, when = _merchant_key(r.merchant), date.fromisoformat(r.date)
+        candidates = [
+            p
+            for p in purchases
+            if _merchant_key(p.merchant) == key
+            and p.date <= r.date
+            and (when - date.fromisoformat(p.date)).days <= RETURN_DAYS
+            and left[p.id] >= r.amount - 0.005
+        ]
+        if not candidates:
+            continue
+        best = max(candidates, key=lambda p: (abs(left[p.id] - r.amount) < 0.005, p.card_id == r.card_id, p.date, p.id))
+        left[best.id] -= r.amount
+        refund_of[r.id] = best.id
+        refunds.setdefault(best.id, []).append(r)
+
+    def linked(t: Transaction) -> Transaction:
+        if t.id in refund_of:
+            return t.model_copy(update={"refund_of": refund_of[t.id]})
+        if back := refunds.get(t.id):
+            return t.model_copy(
+                update={"refunded_amount": round(sum(r.amount for r in back), 2), "refund_ids": [r.id for r in back]}
+            )
+        return t
+
+    return [linked(t) for t in txs]
+
+
 def card_by_number(store: DataStore, last4: str | None) -> Card | None:
     """The user's card whose number ends in `last4`, as printed on a receipt."""
     return next((c for c in store.cards() if last4 and c.last4 == last4), None)
@@ -360,7 +434,8 @@ def find_match(txs: list[Transaction], amount: float, day: str | None, card_id: 
 
 
 def transactions(store: DataStore) -> list[Transaction]:
-    """Every transaction in the user's ledger, newest first.
+    """Every transaction in the user's ledger, newest first, with refunds linked to the purchases
+    they return (link_refunds).
 
     Left out: rows another statement already brought (duplicate_of), and a receipt expense once a
     statement brings the same purchase (see find_match), so nothing is counted twice; that statement
@@ -400,7 +475,7 @@ def transactions(store: DataStore) -> list[Transaction]:
         return linked.get(t.id) or linked.get(claimed.get(t.id, ""))
 
     result = [t.model_copy(update={"receipt_id": rid}) if (rid := receipt_of(t)) else t for t in result]
-    return sorted(result, key=lambda t: (t.date, position[t.id]), reverse=True)
+    return sorted(link_refunds(result), key=lambda t: (t.date, position[t.id]), reverse=True)
 
 
 def transaction(store: DataStore, tx_id: str) -> Transaction | None:

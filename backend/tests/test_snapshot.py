@@ -23,7 +23,7 @@ from .conftest import LEGACY_EXPECTED, LEGACY_FIXTURE, TESTS
 REAL_LIBRARY = TESTS.parent / "library"
 REAL_SNAPSHOT = TESTS / "snapshots" / "real_library.json"
 # Fields added to responses since the snapshots were taken; everything else must match exactly.
-ADDED_FIELDS = {"duplicateCount"}
+ADDED_FIELDS = {"duplicateCount", "refundOf", "refundedAmount", "refundIds"}
 
 
 def without_added(value):
@@ -44,6 +44,11 @@ def check_against_snapshot(tmp_path, client_as, legacy: Path, snapshot: Path) ->
 
     expected = json.loads(snapshot.read_text(encoding="utf-8"))
     for path, want in expected.items():
+        if path == "/api/chat":  # the one conversation then; now one of several, under /api/chats
+            threads = client.get("/api/chats").json()
+            got = [m for t in threads for m in client.get(f"/api/chats/{t['id']}").json()["messages"]]
+            assert got == want, path
+            continue
         response = client.get(path)
         assert response.status_code == 200, (path, response.text)
         assert without_added(response.json()) == want, path
