@@ -1,13 +1,14 @@
 // The only data access layer for screens.
 //
-// With EXPO_PUBLIC_API_URL set (in the root .env), transactions, cards and
-// statements come from the FastAPI backend in backend/, and each request
-// carries the signed-in user's Clerk session token. What the backend doesn't
-// store yet (budgets, bills, alerts) starts
-// empty, and anything the user adds to it lasts until the app reloads.
+// With EXPO_PUBLIC_API_URL set (in the root .env), transactions, cards,
+// statements, budgets and the savings goal come from the FastAPI backend in
+// backend/, and each request carries the signed-in user's Clerk session token.
+// What the backend doesn't store yet (bills, alerts) starts empty, and anything
+// the user adds to it lasts until the app reloads.
 // The assistant is Claude on the backend, with the conversation saved there.
 // Without EXPO_PUBLIC_API_URL everything is mock data from an in-memory copy.
-// Summaries, budgets and the optimizer are computed here from the transactions either way.
+// Summaries, budget and goal progress and the optimizer are computed here from
+// the transactions either way.
 
 import { getClerkInstance } from '@clerk/expo';
 import Constants from 'expo-constants';
@@ -24,8 +25,9 @@ import {
   transactions as seedTransactions,
 } from '@/data/mock';
 import { addDays, daysFrom, formatMonth, lastDayOf, shiftMonth, weekStart } from '@/lib/dates';
-import { INCOME_CATEGORIES } from '@/types';
+import { INCOME_CATEGORIES, isIncomeCategory } from '@/types';
 import { formatMoney } from '@/lib/format';
+import { monthsBetween } from '@/lib/savings-plan';
 import type {
   Alert,
   Budget,
@@ -51,8 +53,12 @@ import type {
   RecurringBill,
   RecurringBillStatus,
   RewardRule,
+  SavingsGoal,
+  SavingsGoalStatus,
+  SpendingBaseline,
   SpendSummary,
   Statement,
+  StatementRewards,
   StatementUpload,
   Transaction,
   TransactionFilters,
@@ -147,8 +153,8 @@ function query(params: Record<string, string | number | undefined>): string {
 
 // ---------------------------------------------------------------------------
 // In-memory "database". With mock data, edits (recategorize, dismiss, add card,
-// budgets, chat) persist for the session. With the backend it only holds what
-// the backend doesn't store yet: it starts empty and lasts until the app reloads.
+// budgets, the savings goal, chat) persist for the session. With the backend it only
+// holds what the backend doesn't store yet: it starts empty and lasts until the app reloads.
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
@@ -158,6 +164,7 @@ const db: {
   cards: Card[];
   rewardRules: RewardRule[];
   budgets: Budget[];
+  goal: SavingsGoal | null;
   recurringBills: RecurringBill[];
   chat: ChatMessage[];
   /** merchant -> category, applied when the user picks "always for this merchant". */
@@ -169,11 +176,12 @@ const db: {
       cards: clone(seedCards),
       rewardRules: clone(seedRules),
       budgets: clone(seedBudgets),
+      goal: null,
       recurringBills: clone(seedBills),
       chat: [],
       merchantRules: {},
     }
-  : { transactions: [], alerts: [], cards: [], rewardRules: [], budgets: [], recurringBills: [], chat: [], merchantRules: {} };
+  : { transactions: [], alerts: [], cards: [], rewardRules: [], budgets: [], goal: null, recurringBills: [], chat: [], merchantRules: {} };
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 /** Fake network latency for mock data. */
@@ -469,10 +477,13 @@ export async function getWeeklySpend(
     .map(([start, spent]) => ({ weekStart: start, spent: round2(spent) }));
 }
 
-function budgetStatus(all: Transaction[], month: YearMonth): BudgetStatus[] {
+// ---------------------------------------------------------------------------
+// Budgets and the savings goal
+
+function budgetStatus(all: Transaction[], budgets: Budget[], month: YearMonth): BudgetStatus[] {
   const range = { from: `${month}-01`, to: lastDayOf(month) };
   const spent = expenses(all.filter((t) => inRange(t, range)));
-  return db.budgets.map((b) => {
+  return budgets.map((b) => {
     const total = sum(spent.filter((t) => t.category === b.category).map((t) => t.amount));
     return {
       ...b,
@@ -484,19 +495,123 @@ function budgetStatus(all: Transaction[], month: YearMonth): BudgetStatus[] {
   });
 }
 
+async function savedBudgets(): Promise<Budget[]> {
+  if (!USE_MOCK) return apiFetch<Budget[]>('/api/budgets');
+  return clone(db.budgets);
+}
+
 export async function getBudgets(month: YearMonth = currentMonth()): Promise<BudgetStatus[]> {
-  return budgetStatus(await allTransactions(), month);
+  const [all, budgets] = await Promise.all([allTransactions(), savedBudgets()]);
+  return budgetStatus(all, budgets, month);
 }
 
 /** Creates or updates the monthly limit for a category. */
 export async function setBudget(category: Category, monthlyLimit: number): Promise<Budget> {
-  await delay(250);
   if (!(monthlyLimit > 0)) throw new Error('Budget limit must be above 0');
   const limit = round2(monthlyLimit);
+  if (!USE_MOCK) {
+    return apiFetch<Budget>(`/api/budgets/${encodeURIComponent(category)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ monthlyLimit: limit }),
+    });
+  }
+  await delay(250);
   const existing = db.budgets.find((b) => b.category === category);
   if (existing) existing.monthlyLimit = limit;
   else db.budgets.push({ category, monthlyLimit: limit });
   return { category, monthlyLimit: limit };
+}
+
+/** Complete months a savings plan averages over. */
+const BASELINE_MONTHS = 3;
+/** A month counts as complete when the ledger covers it to within this many days of either end. */
+const MONTH_EDGE_DAYS = 7;
+
+/**
+ * Average monthly income and spending per category over the latest complete months (up to 3),
+ * for planning savings. A month the ledger only partly covers is left out: usually the current
+ * one, or the first and last months of a statement that runs mid-month to mid-month.
+ */
+export async function getSpendingBaseline(): Promise<SpendingBaseline> {
+  const all = await allTransactions();
+  const dates = all.map((t) => t.date).sort();
+  const months: YearMonth[] = [];
+  if (dates.length) {
+    const first = dates[0];
+    const last = dates[dates.length - 1];
+    const firstMonth = Number(first.slice(8)) <= MONTH_EDGE_DAYS ? first.slice(0, 7) : shiftMonth(first.slice(0, 7), 1);
+    const lastMonth =
+      last.slice(0, 7) < currentMonth() && last >= addDays(lastDayOf(last.slice(0, 7)), -MONTH_EDGE_DAYS)
+        ? last.slice(0, 7)
+        : shiftMonth(last.slice(0, 7), -1);
+    for (let m = lastMonth; m >= firstMonth && months.length < BASELINE_MONTHS; m = shiftMonth(m, -1)) months.unshift(m);
+  }
+  if (!months.length) return { months, monthlyIncome: 0, categories: [] };
+
+  const txs = all.filter((t) => inRange(t, { from: `${months[0]}-01`, to: lastDayOf(months[months.length - 1]) }));
+  const income = sum(txs.filter((t) => t.isIncome && isIncomeCategory(t.category)).map((t) => t.amount));
+  // Refunds come off the spending they came back to.
+  const byCategory = new Map<Category, number>();
+  for (const t of txs) {
+    if (isIncomeCategory(t.category)) continue;
+    byCategory.set(t.category, (byCategory.get(t.category) ?? 0) + sign(t) * t.amount);
+  }
+  return {
+    months,
+    monthlyIncome: round2(income / months.length),
+    categories: [...byCategory]
+      .map(([category, total]) => ({ category, average: round2(total / months.length) }))
+      .filter((c) => c.average > 0)
+      .sort((a, b) => b.average - a.average),
+  };
+}
+
+function goalStatus(goal: SavingsGoal, all: Transaction[]): SavingsGoalStatus {
+  const end = today() < goal.targetDate ? today() : goal.targetDate;
+  const txs = all.filter((t) => t.date >= goal.startDate && t.date <= end);
+  const asOf = txs.reduce((latest, t) => (t.date > latest ? t.date : latest), goal.startDate);
+  const saved = sum(txs.map((t) => (t.isIncome ? t.amount : -t.amount)));
+  const pace = Math.min(1, Math.max(0, daysFrom(goal.startDate, asOf) / daysFrom(goal.startDate, goal.targetDate)));
+  const expected = goal.targetAmount * pace;
+  const left = Math.max(0, goal.targetAmount - saved);
+  const monthsLeft = monthsBetween(asOf, goal.targetDate);
+  return {
+    ...goal,
+    saved: round2(saved),
+    asOf,
+    transactionCount: txs.length,
+    expected: round2(expected),
+    ratio: round2(saved / goal.targetAmount),
+    onTrack: saved >= expected - 0.005,
+    monthlyNeeded: round2(monthsLeft > 0 ? left / monthsLeft : left),
+    daysLeft: daysFrom(today(), goal.targetDate),
+  };
+}
+
+/** The savings goal with its progress so far, or null when none is set. */
+export async function getSavingsGoal(): Promise<SavingsGoalStatus | null> {
+  const [goal, all] = await Promise.all([
+    USE_MOCK ? delay(150).then(() => clone(db.goal)) : apiFetch<SavingsGoal | null>('/api/goal'),
+    allTransactions(),
+  ]);
+  return goal ? goalStatus(goal, all) : null;
+}
+
+/** Saves the goal and replaces every budget with `budgets`, the ones that reach it. */
+export async function saveSavingsGoal(goal: SavingsGoal, budgets: Budget[]): Promise<SavingsGoal> {
+  const clean = budgets.filter((b) => b.monthlyLimit > 0).map((b) => ({ ...b, monthlyLimit: round2(b.monthlyLimit) }));
+  if (!USE_MOCK) return apiFetch<SavingsGoal>('/api/goal', { method: 'PUT', body: JSON.stringify({ goal, budgets: clean }) });
+  await delay(400);
+  db.goal = clone(goal);
+  db.budgets = clean;
+  return clone(goal);
+}
+
+/** Removes the goal; the budgets stay. */
+export async function deleteSavingsGoal(): Promise<void> {
+  if (!USE_MOCK) return apiFetch<void>('/api/goal', { method: 'DELETE' });
+  await delay(250);
+  db.goal = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -540,8 +655,23 @@ export async function dismissAlert(id: string): Promise<Alert | null> {
 // ---------------------------------------------------------------------------
 // Card rewards optimizer
 
-/** Categories that can't realistically go on a credit card. */
-const NOT_CARD_PAYABLE: Category[] = ['Housing', ...INCOME_CATEGORIES];
+/**
+ * Categories that earn no rewards and can't move to another card: rent can't realistically go on
+ * a credit card, and fees and interest are charged by the card itself.
+ */
+const NOT_CARD_PAYABLE: Category[] = ['Housing', 'Fees & interest', ...INCOME_CATEGORIES];
+
+/** Money back for a purchase: a refund, under the spending category it came back to. */
+const isRefund = (t: Transaction) => t.isIncome && !isIncomeCategory(t.category);
+
+/** Purchases and refunds that earn (or take back) rewards, oldest first. */
+const rewardable = (txs: Transaction[]) =>
+  txs
+    .filter((t) => (!t.isIncome || isRefund(t)) && !NOT_CARD_PAYABLE.includes(t.category))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+/** +1 for a purchase, -1 for a refund. */
+const sign = (t: Transaction) => (isRefund(t) ? -1 : 1);
 
 function ruleFor(rules: RewardRule[], cardId: string, category: Category) {
   const own = rules.filter((r) => r.cardId === cardId);
@@ -551,7 +681,8 @@ function ruleFor(rules: RewardRule[], cardId: string, category: Category) {
 /**
  * Cashback for putting `amount` on a card. Caps are monthly spend limits per rule;
  * spend past the cap earns the card's '*' rate. `usage` tracks spend per rule/month
- * and is only updated when `commit` is true.
+ * and is only updated when `commit` is true. A refund takes back cashback at the
+ * rule's rate (negative), as card issuers do.
  */
 function rewardFor(
   rules: RewardRule[],
@@ -562,6 +693,7 @@ function rewardFor(
 ): number {
   const rule = ruleFor(rules, cardId, t.category);
   if (!rule) return 0;
+  if (isRefund(t)) return (-t.amount * rule.ratePercent) / 100;
   let eligible = t.amount;
   if (rule.cap !== null) {
     const key = `${cardId}|${rule.category}|${t.date.slice(0, 7)}`;
@@ -575,9 +707,7 @@ function rewardFor(
 }
 
 function optimize(all: Transaction[], cards: Card[], rules: RewardRule[], range: DateRange): CardOptimizer {
-  const txs = expenses(all.filter((t) => inRange(t, range)))
-    .filter((t) => !NOT_CARD_PAYABLE.includes(t.category))
-    .sort((a, b) => a.date.localeCompare(b.date));
+  const txs = rewardable(all.filter((t) => inRange(t, range)));
 
   const actualUsage = new Map<string, number>();
   const bestUsage = new Map<string, number>();
@@ -589,13 +719,17 @@ function optimize(all: Transaction[], cards: Card[], rules: RewardRule[], range:
 
   for (const t of txs) {
     const earned = rewardFor(rules, t.cardId, t, actualUsage, true);
+    const amount = sign(t) * t.amount;
 
-    // Best case: the card that would have paid the most for this purchase.
+    // Best case: the card that would have paid the most for this purchase. For a refund,
+    // the card that would have taken the most back, since that is where the purchase went.
     let bestCard = t.cardId;
-    let bestReward = -1;
+    let bestReward = 0;
+    let bestScore = -Infinity;
     for (const card of cards) {
       const r = rewardFor(rules, card.id, t, bestUsage, false);
-      if (r > bestReward) {
+      if (sign(t) * r > bestScore) {
+        bestScore = sign(t) * r;
         bestReward = r;
         bestCard = card.id;
       }
@@ -604,15 +738,15 @@ function optimize(all: Transaction[], cards: Card[], rules: RewardRule[], range:
     potentialByCard.set(bestCard, (potentialByCard.get(bestCard) ?? 0) + bestReward);
 
     const acc = cats.get(t.category) ?? { spent: 0, earned: 0, potential: 0, byCard: new Map(), bestByCard: new Map() };
-    acc.spent += t.amount;
+    acc.spent += amount;
     acc.earned += earned;
     acc.potential += bestReward;
-    acc.byCard.set(t.cardId, (acc.byCard.get(t.cardId) ?? 0) + t.amount);
-    acc.bestByCard.set(bestCard, (acc.bestByCard.get(bestCard) ?? 0) + t.amount);
+    acc.byCard.set(t.cardId, (acc.byCard.get(t.cardId) ?? 0) + amount);
+    acc.bestByCard.set(bestCard, (acc.bestByCard.get(bestCard) ?? 0) + amount);
     cats.set(t.category, acc);
 
     const c = perCard.get(t.cardId) ?? { spent: 0, earned: 0 };
-    perCard.set(t.cardId, { spent: c.spent + t.amount, earned: c.earned + earned });
+    perCard.set(t.cardId, { spent: c.spent + amount, earned: c.earned + earned });
   }
 
   const byCategory: OptimizerCategory[] = [...cats]
@@ -676,6 +810,56 @@ export async function getCardOptimizer(period: RangePreset | DateRange = 'last-3
   return optimize(txs, cards, rules, resolveRange(period));
 }
 
+/**
+ * Each card's rewards on its latest statement: the statement's printed summary (`reported`, the
+ * amount to show) next to the app's own estimate by rate. The estimate counts the statement's own
+ * transactions, whatever their dates (purchases from just before the period can post into it).
+ * Backend only: mock transactions have no statements.
+ */
+export async function getStatementRewards(): Promise<StatementRewards[]> {
+  if (USE_MOCK) return [];
+  const [txs, rules, statements] = await Promise.all([allTransactions(), getRewardRules(), getStatements()]);
+  const byStatement = new Map<string, Transaction[]>();
+  for (const t of txs) {
+    if (t.statementId) byStatement.set(t.statementId, [...(byStatement.get(t.statementId) ?? []), t]);
+  }
+
+  const latest = new Map<string, StatementRewards>();
+  for (const s of statements) {
+    const rows = byStatement.get(s.id) ?? [];
+    if (!s.cardId || rows.length === 0 || !rules.some((r) => r.cardId === s.cardId)) continue;
+    const dates = rows.map((t) => t.date).sort();
+    const range = { from: s.periodStart ?? dates[0], to: s.periodEnd ?? dates[dates.length - 1] };
+    const prev = latest.get(s.cardId);
+    if (prev && prev.range.to >= range.to) continue;
+
+    const rates = new Map<number, { spent: number; earned: number }>();
+    const usage = new Map<string, number>();
+    for (const t of rewardable(rows)) {
+      const rate = ruleFor(rules, s.cardId, t.category)?.ratePercent ?? 0;
+      const acc = rates.get(rate) ?? { spent: 0, earned: 0 };
+      acc.spent += sign(t) * t.amount;
+      acc.earned += rewardFor(rules, s.cardId, t, usage, true);
+      rates.set(rate, acc);
+    }
+    const byRate = [...rates]
+      .filter(([rate]) => rate > 0)
+      .map(([ratePercent, a]) => ({ ratePercent, spent: round2(a.spent), earned: round2(a.earned) }))
+      .sort((a, b) => b.ratePercent - a.ratePercent);
+    latest.set(s.cardId, {
+      cardId: s.cardId,
+      statementId: s.id,
+      statementName: s.name.replace(/\.pdf$/i, ''),
+      range,
+      spent: round2(sum(byRate.map((r) => r.spent))),
+      earned: round2(sum(byRate.map((r) => r.earned))),
+      byRate,
+      reported: s.rewards,
+    });
+  }
+  return [...latest.values()];
+}
+
 // ---------------------------------------------------------------------------
 // Assistant. With the backend it is Claude with tools over the ledger
 // (backend/personal_banker/assistant.py), and the conversation is saved there.
@@ -701,7 +885,7 @@ function onTrackAnswer(all: Transaction[]): Answer {
   const lastMonthToDate = summarize(all, { from: `${prev}-01`, to: `${prev}-${today().slice(8)}` }).totalSpent;
   const diff = thisMonth - lastMonthToDate;
 
-  const statuses = budgetStatus(all, month);
+  const statuses = budgetStatus(all, db.budgets, month);
   const hot = statuses.filter((b) => b.ratio >= 0.8).sort((a, b) => b.ratio - a.ratio);
 
   const lines = [

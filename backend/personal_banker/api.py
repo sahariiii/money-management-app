@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import Field
 
-from . import assistant, auth, ledger, receipts, service
+from . import assistant, auth, ledger, planning, receipts, service
 from .docai import render_pdf
 from .docai.pipeline import EXTRACTION_ENGINE
 from .ledger import AppCategory, AppModel, Card, CardInput, CategoryUpdate, RewardRule, Transaction
@@ -57,6 +57,9 @@ class Statement(AppModel):
     account_last4: str | None  # the account number printed on it, last 4 digits
     card_match: ledger.CardMatch | None  # None until categorized
     card_id: str | None  # the card whose account number matches
+    period_start: str | None  # the statement period as printed, YYYY-MM-DD
+    period_end: str | None
+    rewards: ledger.ReportedRewards | None  # what the statement says it earned; None if it prints none
 
 
 # One statement at a time: PaddleOCR-VL has one GPU, and Claude already reads pages in parallel.
@@ -77,6 +80,7 @@ def _statement(doc: StoredDocument) -> Statement:
     else:
         status, message = "incomplete", reason or "Not processed yet."
     match, card_id = ledger.statement_match(library, budget) if budget is not None else (None, None)
+    period_start, period_end = ledger.statement_period(budget) if budget else (None, None)
     return Statement(
         id=doc.id,
         name=doc.name,
@@ -89,6 +93,9 @@ def _statement(doc: StoredDocument) -> Statement:
         account_last4=ledger.statement_account_last4(budget) if budget else None,
         card_match=match,
         card_id=card_id,
+        period_start=period_start,
+        period_end=period_end,
+        rewards=ledger.statement_rewards(budget) if budget else None,
     )
 
 
@@ -150,6 +157,19 @@ def _identify_account(doc_id: str) -> None:
         log.exception("Reading the account of %s failed", doc_id)
 
 
+def _read_summary(doc_id: str) -> None:
+    """Fills in the period and printed rewards of a statement categorized before budget.json kept them.
+
+    Queued after _identify_account, so a statement's account type is known by the time it runs.
+    """
+    doc = library.get(doc_id)
+    try:
+        if doc and service.needs_summary(library, doc) and not service.read_statement_summary(library, doc, make_client()):
+            log.warning("No transcription to read the rewards of %s from.", doc_id)
+    except Exception:  # the app shows its own estimate meanwhile; the next start tries again
+        log.exception("Reading the rewards of %s failed", doc_id)
+
+
 # ---------------------------------------------------------------------------
 # App
 
@@ -182,6 +202,12 @@ async def lifespan(_: FastAPI):
                 _jobs.submit(_identify_account, doc_id)
         else:
             log.warning("%d statement(s) can't be matched to cards until ANTHROPIC_API_KEY is set.", len(missing))
+    # A statement still missing its account may turn out to be a card's, so it is queued too.
+    unread = [doc.id for doc in library.documents() if service.needs_summary(library, doc) or doc.id in missing]
+    if unread and has_api_key():
+        log.info("Reading the printed rewards of %d older statement(s).", len(unread))
+        for doc_id in unread:
+            _jobs.submit(_read_summary, doc_id)
     yield
     _jobs.shutdown(wait=False, cancel_futures=True)
 
@@ -293,6 +319,41 @@ def delete_expense(tx_id: str) -> Response:
     if ledger.transaction(library, tx_id) is not None:
         raise HTTPException(409, "Transactions from statements can't be deleted.")
     raise HTTPException(404, "Transaction not found.")
+
+
+# ---------------------------------------------------------------------------
+# Budgets and the savings goal
+
+
+@api.get("/budgets")
+def get_budgets() -> list[planning.Budget]:
+    """Monthly limits per category; the app works out what was spent against them."""
+    return planning.budgets(library)
+
+
+@api.put("/budgets/{category}")
+def set_budget(category: ledger.ExpenseCategory, body: planning.BudgetLimit) -> planning.Budget:
+    return planning.set_budget(library, category, body.monthly_limit)
+
+
+@api.get("/goal")
+def get_goal() -> planning.SavingsGoal | None:
+    """The savings goal, or null when there is none; the app works out its progress from the transactions."""
+    return planning.goal(library)
+
+
+@api.put("/goal")
+def save_goal(plan: planning.GoalPlan) -> planning.SavingsGoal:
+    """Saves the goal and replaces every budget with the ones that reach it."""
+    return planning.save_goal(library, plan)
+
+
+@api.delete("/goal", status_code=204)
+def delete_goal() -> Response:
+    """Removes the goal; the budgets stay."""
+    if not planning.delete_goal(library):
+        raise HTTPException(404, "There is no savings goal.")
+    return Response(status_code=204)
 
 
 # ---------------------------------------------------------------------------

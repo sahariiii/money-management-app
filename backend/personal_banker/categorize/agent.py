@@ -16,7 +16,13 @@ from pydantic import BaseModel
 
 from ..llm import CallResult, run_structured
 from .rules import match_rule
-from .schemas import ExtractedStatement, StatementAccount, StatementTransaction, build_decision_model
+from .schemas import (
+    ExtractedStatement,
+    StatementAccount,
+    StatementSummary,
+    StatementTransaction,
+    build_decision_model,
+)
 from .workbook import BudgetSetup, Category, PastEntry, VendorRule
 
 EXTRACTION_INSTRUCTIONS = """\
@@ -36,7 +42,15 @@ the year from the statement period when a row omits it.
 in other_lines, not in transactions, so nothing disappears silently.
 - Also give the bank, the account or card name, the last 4 digits of the \
 account number and the statement period as printed in the statement header \
-(e.g. 'From July 23, 2026 to August 21, 2026')."""
+(e.g. 'From July 23, 2026 to August 21, 2026').
+- If the statement prints a rewards summary (cash back, points or miles), copy \
+what this statement earned, line by line, e.g. '3% Cash Back + 14.17'."""
+
+SUMMARY_INSTRUCTIONS = """\
+You read bank and credit-card statements for a personal budget. Each request \
+gives you one statement, transcribed to Markdown from page images. Give its \
+statement period, and if it prints a rewards summary (cash back, points or \
+miles), what this statement earned, line by line, e.g. '3% Cash Back + 14.17'."""
 
 ACCOUNT_INSTRUCTIONS = """\
 You read bank and credit-card statements for a personal budget. Each request \
@@ -250,6 +264,23 @@ def identify_account(client: anthropic.Anthropic, statement_markdown: str) -> Ca
     return run_structured(client, ACCOUNT_INSTRUCTIONS, content, StatementAccount)
 
 
+@braintrust.traced(notrace_io=True)
+def read_summary(client: anthropic.Anthropic, statement_markdown: str) -> CallResult[StatementSummary]:
+    """Just the period and rewards summary: for statements categorized before budget.json kept them."""
+    content = [
+        {"type": "text", "text": f"<statement>\n{statement_markdown}\n</statement>\n\nWhat period and rewards does it show?"}
+    ]
+    return run_structured(client, SUMMARY_INSTRUCTIONS, content, StatementSummary)
+
+
+def summary_record(summary: StatementSummary) -> dict:
+    """The period and rewards as stored in budget.json; rewards is None when the statement prints none."""
+    return {
+        "period": {"start": summary.period_start, "end": summary.period_end},
+        "rewards": summary.rewards.model_dump() if summary.rewards else None,
+    }
+
+
 def account_record(account: StatementAccount) -> dict:
     """The account as stored in budget.json. Keeps at most the last 4 digits, whatever the model returned."""
     digits = re.sub(r"\D", "", account.account_last4 or "")
@@ -268,10 +299,13 @@ def budget_record(result: CategorizationResult, workbook_name: str) -> dict:
     still load after the user renames or removes a category. `title` names the
     statement after its month, e.g. 'Aug2026'; the library renames the document to it.
     `account` says which account it is for; the app links it to the card with that account number.
+    `period` and `rewards` are as printed (see summary_record); the app shows the statement's own
+    cashback next to its estimate.
     """
     return {
         "title": statement_title(result.calls[0].output),
         "account": account_record(result.calls[0].output),
+        **summary_record(result.calls[0].output),
         "workbook": workbook_name,
         "categorized_at": datetime.now().isoformat(timespec="seconds"),
         "model": result.calls[0].model,

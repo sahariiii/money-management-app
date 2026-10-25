@@ -1,6 +1,7 @@
 // Mock data for the UI phase. Only lib/api.ts may import this file.
 // Generated deterministically (seeded PRNG) so the demo looks the same on every run.
 
+import { CARD_PRESETS } from '@/lib/card-presets';
 import type {
   Alert,
   Budget,
@@ -18,6 +19,9 @@ export const DEMO_TODAY: ISODate = '2026-10-23';
 const DEBIT = 'card_debit';
 const VISA = 'card_visa';
 
+// The Visa has the real CIBC Dividend Visa Infinite rates.
+const CIBC_DIVIDEND = CARD_PRESETS.find((p) => p.id === 'cibc-dividend-visa-infinite')!;
+
 export const cards: Card[] = [
   {
     id: DEBIT,
@@ -34,23 +38,22 @@ export const cards: Card[] = [
     id: VISA,
     institution: 'CIBC',
     type: 'credit',
-    nickname: 'Visa Cashback',
+    nickname: CIBC_DIVIDEND.nickname,
     last4: '7392',
-    annualFee: 120,
-    interestRate: 20.99,
+    annualFee: CIBC_DIVIDEND.annualFee,
+    interestRate: CIBC_DIVIDEND.interestRate,
     cycleDay: 15,
   },
 ];
 
-export const rewardRules: RewardRule[] = [
-  { cardId: VISA, category: 'Groceries', ratePercent: 3, cap: null },
-  { cardId: VISA, category: '*', ratePercent: 1, cap: null },
-];
+export const rewardRules: RewardRule[] = CIBC_DIVIDEND.rules.map((r) => ({ ...r, cardId: VISA }));
 
 export const budgets: Budget[] = [
   { category: 'Groceries', monthlyLimit: 1050 },
   { category: 'Food', monthlyLimit: 400 },
-  { category: 'Transport', monthlyLimit: 325 },
+  { category: 'Gas & EV charging', monthlyLimit: 150 },
+  { category: 'Transport', monthlyLimit: 175 },
+  { category: 'Car', monthlyLimit: 700 }, // ~76% in Oct, so Food stays the budget to watch
   { category: 'Shopping', monthlyLimit: 250 },
   { category: 'Health', monthlyLimit: 100 },
   { category: 'Entertainment', monthlyLimit: 100 },
@@ -101,7 +104,7 @@ const PATTERNS: Pattern[] = [
 
   { merchant: 'PRESTO', raw: ['PRESTO FARE/T7HD9Q', 'PRESTO AUTOLOAD'], category: 'Transport', min: 20, max: 50, debitShare: 0.3, perMonth: 2 },
   { merchant: 'Uber', raw: ['UBER *TRIP HELP.UBER.COM'], category: 'Transport', min: 14, max: 32, debitShare: 0.1, perMonth: 2 },
-  { merchant: 'Petro-Canada', raw: ['PETRO-CANADA 98543'], category: 'Transport', min: 45, max: 70, debitShare: 0.4, perMonth: 2 },
+  { merchant: 'Petro-Canada', raw: ['PETRO-CANADA 98543'], category: 'Gas & EV charging', min: 45, max: 70, debitShare: 0.4, perMonth: 2 },
 
   { merchant: 'Amazon', raw: ['AMZN Mktp CA*2K4L19RT2', 'AMAZON.CA*RT5YH21K3'], category: 'Shopping', min: 15, max: 90, debitShare: 0.2, perMonth: 2 },
   { merchant: 'Canadian Tire', raw: ['CDN TIRE STORE #00123'], category: 'Shopping', min: 20, max: 110, debitShare: 0.3, perMonth: 1 },
@@ -152,6 +155,8 @@ function fixedMonthly(ym: string): Draft[] {
   });
   return [
     bill(1, `INTERAC E-TRF SENT RENT ${monthAbbr(ym)} LANDLORD`, 'Rent', 'Housing', 1850, DEBIT),
+    bill(3, 'TOYOTA FINANCIAL SVCS PAD', 'Toyota Financial', 'Car', 389.12, DEBIT),
+    bill(5, 'INTACT INS AUTO PREM 1-866-464-2424', 'Intact Insurance', 'Car', 142.5, DEBIT),
     bill(8, 'FIDO MOBILE 800-724-3436', 'Fido', 'Phone & Internet', 55, VISA),
     bill(10, 'ROGERS COMMUNICATIONS 888-764-3771', 'Rogers', 'Phone & Internet', rogers, VISA),
     bill(12, 'NETFLIX.COM 866-579-7172', 'Netflix', 'Subscriptions', 18.99, VISA),
@@ -229,6 +234,8 @@ const BILLS: Omit<RecurringBill, 'nextDue' | 'lastAmount'>[] = [
   { id: 'bill_netflix', merchant: 'Netflix', expectedAmount: 18.99, interval: 'monthly' },
   { id: 'bill_spotify', merchant: 'Spotify', expectedAmount: 11.99, interval: 'monthly' },
   { id: 'bill_hydro', merchant: 'Toronto Hydro', expectedAmount: 80, interval: 'monthly' },
+  { id: 'bill_car_lease', merchant: 'Toyota Financial', expectedAmount: 389.12, interval: 'monthly' },
+  { id: 'bill_car_insurance', merchant: 'Intact Insurance', expectedAmount: 142.5, interval: 'monthly' },
 ];
 
 export const recurringBills: RecurringBill[] = BILLS.map((b) => {

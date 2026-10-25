@@ -47,9 +47,39 @@ class StatementAccount(BaseModel):
     )
 
 
-class ExtractedStatement(StatementAccount):
+class RewardLine(BaseModel):
+    label: str = Field(description="The line as printed, e.g. '3% Cash Back' or 'Bonus points'.")
+    rate_percent: float | None = Field(
+        description="The earn rate the line names, e.g. 3 for '3% Cash Back'; null if it names none."
+    )
+    amount: float = Field(description="What the line adds on this statement, as printed; negative if printed as a deduction.")
+
+
+class StatementRewards(BaseModel):
+    """The rewards summary printed on a statement: what this statement earned, line by line."""
+
+    program: str | None = Field(description="The rewards program as printed, e.g. 'Dividend Cash Back'; null if not printed.")
+    unit: Literal["dollars", "points", "miles"] = Field(description="dollars for cash back, else what the program counts.")
+    lines: list[RewardLine] = Field(
+        description="Only what this statement earned or deducted. Leave out balances (the amount as at the last "
+        "statement, the total to date) and amounts redeemed."
+    )
+
+
+class StatementPeriod(BaseModel):
     period_start: str | None = Field(description="First day of the statement period as YYYY-MM-DD; null if not printed.")
     period_end: str | None = Field(description="Last day of the statement period as YYYY-MM-DD; null if not printed.")
+
+
+class StatementSummary(StatementPeriod):
+    """The statement's period and its printed rewards summary."""
+
+    rewards: StatementRewards | None = Field(
+        description="The rewards (cash back, points, miles) summary printed on the statement; null if it has none."
+    )
+
+
+class ExtractedStatement(StatementAccount, StatementSummary):
     transactions: list[StatementTransaction] = Field(description="Every transaction row, in the order printed.")
     other_lines: list[OtherLine] = Field(
         description="Rows in the transaction tables that are not transactions: opening/closing or carried-forward "

@@ -1,5 +1,6 @@
 import { useClerk, useUser } from '@clerk/expo';
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { router } from 'expo-router';
 import { Fragment, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
@@ -13,6 +14,7 @@ import {
   CategoryBadge,
   Divider,
   EmptyState,
+  GoalCard,
   Loading,
   Screen,
   SectionHeader,
@@ -28,6 +30,7 @@ import {
   getAlerts,
   getBudgets,
   getRecurringBills,
+  getSavingsGoal,
   getSpendSummary,
   setBudget,
 } from '@/lib/api';
@@ -240,6 +243,7 @@ export default function More() {
   const month = currentMonth();
 
   const budgets = useAsync(() => getBudgets(month), month);
+  const goal = useAsync(getSavingsGoal);
   const spend = useAsync(() => getSpendSummary('this-month'));
   const bills = useAsync(getRecurringBills);
   const alerts = useAsync(() => getAlerts());
@@ -271,6 +275,8 @@ export default function More() {
       setEditing(null);
       budgets.reload();
       toast(`${saved.category} budget set to ${formatMoney(saved.monthlyLimit)} a month`);
+    } catch {
+      setDraftError("Couldn't save the limit. Check your connection and try again.");
     } finally {
       setSaving(false);
     }
@@ -307,6 +313,12 @@ export default function More() {
 
   return (
     <Screen>
+      {goal.data === undefined ? (
+        <Loading />
+      ) : (
+        <GoalCard goal={goal.data} onEdit={() => router.push('/savings-goal')} />
+      )}
+
       <View style={[styles.grid, { gap }]}>
         <Card style={{ width: half }}>
           <SectionHeader title="Budgets" subtitle={`${formatMonth(month)} · tap the pencil to change a limit`} />

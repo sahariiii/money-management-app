@@ -4,7 +4,9 @@
 export const EXPENSE_CATEGORIES = [
   'Groceries',
   'Food', // restaurants, cafés, takeout and delivery
-  'Transport',
+  'Gas & EV charging',
+  'Transport', // transit, taxis and rideshare
+  'Car', // insurance, financing and leases, maintenance, parking, tolls
   'Shopping',
   'Health',
   'Entertainment',
@@ -12,6 +14,7 @@ export const EXPENSE_CATEGORIES = [
   'Phone & Internet',
   'Utilities',
   'Housing',
+  'Fees & interest', // bank and card fees, interest charged; they earn no cashback
   'Other',
 ] as const;
 
@@ -71,6 +74,8 @@ export type Transaction = {
   isIncome: boolean;
   /** receipt: added from a scanned receipt (the user can delete it). Statement rows otherwise. */
   source?: 'statement' | 'receipt';
+  /** The statement it is on (Statement.id); null for receipt expenses and in mock mode. */
+  statementId?: string | null;
   /** A scanned receipt saved with it; load it with getReceipt. */
   receiptId?: string | null;
 };
@@ -81,6 +86,15 @@ export const CASH_CARD_ID = 'cash';
 export type Budget = {
   category: Category;
   monthlyLimit: number;
+};
+
+/** The user's one savings goal: save targetAmount between startDate and targetDate. */
+export type SavingsGoal = {
+  name: string;
+  targetAmount: number;
+  /** The day it was set. Saving counts from here: money in minus money out. */
+  startDate: ISODate;
+  targetDate: ISODate;
 };
 
 export type RecurringBill = {
@@ -163,6 +177,60 @@ export type BudgetStatus = Budget & {
   ratio: number;
 };
 
+export type SavingsGoalStatus = SavingsGoal & {
+  /** Money in minus money out from startDate through asOf; negative when more went out. */
+  saved: number;
+  /**
+   * The latest transaction counted (statements arrive after the fact), or startDate when
+   * there is none yet. Progress is measured on this day.
+   */
+  asOf: ISODate;
+  transactionCount: number;
+  /** What a steady pace, from nothing at startDate to targetAmount at targetDate, saves by asOf. */
+  expected: number;
+  /** saved / targetAmount. */
+  ratio: number;
+  /** saved >= expected. */
+  onTrack: boolean;
+  /** Saving per month from asOf that still reaches targetAmount; 0 once it is reached. */
+  monthlyNeeded: number;
+  /** From today to targetDate; negative once it has passed. */
+  daysLeft: number;
+};
+
+/** Recent complete months of income and spending: what a savings plan starts from. */
+export type SpendingBaseline = {
+  /** Oldest first; empty when the ledger has no complete month yet. */
+  months: YearMonth[];
+  /** Average money in per month under income categories. */
+  monthlyIncome: number;
+  /** Average spending per month by category (purchases minus refunds), largest first. */
+  categories: { category: Category; average: number }[];
+};
+
+export type PlanCategory = {
+  category: Category;
+  /** Average monthly spending, in whole dollars. */
+  average: number;
+  /** Suggested monthly budget, in whole dollars. */
+  target: number;
+  /** Fixed costs (housing, car, phone, utilities, fees) are never cut. */
+  fixed: boolean;
+};
+
+/** Monthly budgets that save an amount by a date (planSavings in lib/savings-plan.ts). */
+export type SavingsPlan = {
+  monthlyIncome: number;
+  /** Months from the plan's start to its target date. */
+  months: number;
+  /** Saving per month that reaches the amount. */
+  monthlyNeeded: number;
+  /** Largest average first. */
+  categories: PlanCategory[];
+  /** The suggested targets save monthlyNeeded; false when even the deepest cuts fall short. */
+  reachable: boolean;
+};
+
 export type OptimizerCategory = {
   category: Category;
   spent: number;
@@ -198,7 +266,27 @@ export type CardOptimizer = {
   tips: string[];
 };
 
-export type CategoryUpdate = { transaction: Transaction; affectedCount: number };
+/**
+ * A card's rewards on one statement: the app's own estimate by rate, from the statement's
+ * transactions and the card's reward rules, and what the statement itself says it earned.
+ */
+export type StatementRewards = {
+  cardId: string;
+  statementId: string;
+  statementName: string;
+  /** The printed statement period, else the dates of its first and last transactions. */
+  range: DateRange;
+  /** Purchases minus refunds that earn cashback. */
+  spent: number;
+  /** The estimate. */
+  earned: number;
+  /** The estimate by rate, highest first; spend at 0% is left out. */
+  byRate: { ratePercent: number; spent: number; earned: number }[];
+  /** The statement's own numbers, when it prints a rewards summary. Show these as the amount earned. */
+  reported: ReportedRewards | null;
+};
+
+export type CategoryUpdate ={ transaction: Transaction; affectedCount: number };
 
 /** What the add and edit card forms save: a card's details plus all of its reward rules. */
 export type NewCardInput = Omit<Card, 'id' | 'isPlaceholder'> & {
@@ -244,6 +332,21 @@ export type Statement = {
   cardMatch: 'matched' | 'no_match' | 'no_account_number' | 'pending' | null;
   /** The matching card. */
   cardId: string | null;
+  /** The statement period as printed; null until read (or if not printed). */
+  periodStart: ISODate | null;
+  periodEnd: ISODate | null;
+  /** The rewards summary printed on it; null if it prints none (or it wasn't read yet). */
+  rewards: ReportedRewards | null;
+};
+
+/** What a statement says it earned in rewards, line by line as printed (e.g. "3% Cash Back 14.17"). */
+export type ReportedRewards = {
+  /** e.g. "Dividend Cash Back". */
+  program: string | null;
+  unit: 'dollars' | 'points' | 'miles';
+  /** The lines added up. */
+  earned: number;
+  lines: { label: string; ratePercent: number | null; amount: number }[];
 };
 
 /** What was read from a receipt photo. Missing values are null when the receipt doesn't print them. */

@@ -18,6 +18,7 @@
       receipts/<scan id>.jpg   a scanned receipt's photo (upright, at most 1568 px)
       receipts/<scan id>.json  what was read from it, and the transaction it belongs to
       chat.json                the conversation with the app's assistant
+      plan.json                the mobile app's monthly budgets and its savings goal
 
 The folder is configurable with PERSONAL_BANKER_LIBRARY and is git-ignored.
 """
@@ -275,3 +276,13 @@ class Library:
 
     def save_chat(self, messages: list[dict]) -> None:
         _write_json(self.root / "chat.json", {"messages": messages})
+
+    # --- Budgets and savings goal --------------------------------------------------------
+
+    def plan(self) -> dict:
+        """The app's monthly budgets and savings goal: {"budgets": [...], "goal": {...} | None} (see planning.py)."""
+        path = self.root / "plan.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"budgets": [], "goal": None}
+
+    def save_plan(self, data: dict) -> None:
+        _write_json(self.root / "plan.json", data)

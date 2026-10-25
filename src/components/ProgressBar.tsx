@@ -5,6 +5,8 @@ import { colors, layout, radius } from '@/constants/theme';
 type Props = {
   /** Fraction used, e.g. spent / budget. Values above 1 are clamped visually. */
   value: number;
+  /** Fill color instead of progressColor's, e.g. for savings, where more is better. */
+  color?: string;
 };
 
 export function progressColor(value: number) {
@@ -13,14 +15,14 @@ export function progressColor(value: number) {
   return colors.primary;
 }
 
-export function ProgressBar({ value }: Props) {
+export function ProgressBar({ value, color }: Props) {
   const pct = Math.max(0, Math.min(value, 1)) * 100;
   return (
     <View
       style={styles.track}
       accessibilityRole="progressbar"
       accessibilityValue={{ min: 0, max: 100, now: Math.round(value * 100) }}>
-      <View style={[styles.fill, { width: `${pct}%`, backgroundColor: progressColor(value) }]} />
+      <View style={[styles.fill, { width: `${pct}%`, backgroundColor: color ?? progressColor(value) }]} />
     </View>
   );
 }

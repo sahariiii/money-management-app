@@ -5,6 +5,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { borderWidth, colors, layout, spacing, typography } from '@/constants/theme';
 import { useLayout } from '@/hooks/use-layout';
+import { CARD_PRESETS, type CardPreset } from '@/lib/card-presets';
 import { categoryColor, categoryIcon } from '@/lib/categories';
 import { maskCard } from '@/lib/format';
 import { EXPENSE_CATEGORIES, type Card as CardType, type Category, type NewCardInput, type RewardRule } from '@/types';
@@ -19,8 +20,14 @@ import { TextField } from './TextField';
 type BonusRule = { category: Category; rate: string; cap: string };
 type Errors = Partial<Record<string, string>>;
 
-/** Categories you can earn a bonus on (not income or rent). */
-const BONUS_CATEGORIES = EXPENSE_CATEGORIES.filter((c) => c !== 'Housing');
+/** Categories you can earn a bonus on (not income, rent, or fees and interest). */
+const BONUS_CATEGORIES = EXPENSE_CATEGORIES.filter((c) => c !== 'Housing' && c !== 'Fees & interest');
+
+/** A card's category rules as form rows; the '*' rule is the separate base rate. */
+const toBonus = (rules: Pick<RewardRule, 'category' | 'ratePercent' | 'cap'>[]): BonusRule[] =>
+  rules.flatMap((r) =>
+    r.category === '*' ? [] : [{ category: r.category, rate: String(r.ratePercent), cap: r.cap === null ? '' : String(r.cap) }],
+  );
 
 const num = (s: string) => (s.trim() === '' ? NaN : Number(s.replace(',', '.')));
 const digits4 = (v: string) => v.replace(/\D/g, '').slice(-4);
@@ -51,17 +58,29 @@ export function CardForm({ initial, submitLabel, onSubmit, onDelete }: Props) {
   const [interestRate, setInterestRate] = useState(card?.type === 'credit' ? String(card.interestRate) : '');
   const [cycleDay, setCycleDay] = useState(String(card?.cycleDay ?? 1));
   const [baseRate, setBaseRate] = useState(initial ? (base ? String(base.ratePercent) : '') : '1');
-  const [bonus, setBonus] = useState<BonusRule[]>(
-    (initial?.rules ?? []).flatMap((r) =>
-      r.category === '*' ? [] : [{ category: r.category, rate: String(r.ratePercent), cap: r.cap === null ? '' : String(r.cap) }],
-    ),
-  );
+  const [bonus, setBonus] = useState<BonusRule[]>(toBonus(initial?.rules ?? []));
+  const [presetId, setPresetId] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
   const [errors, setErrors] = useState<Errors>({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  /** Fills in everything but the card's own numbers, replacing the reward rules. */
+  function applyPreset(p: CardPreset) {
+    setPresetId(p.id);
+    setNickname(p.nickname);
+    setInstitution(p.institution);
+    setType(p.type);
+    setAnnualFee(String(p.annualFee));
+    setInterestRate(p.type === 'credit' ? String(p.interestRate) : '');
+    const presetBase = p.rules.find((r) => r.category === '*');
+    setBaseRate(presetBase ? String(presetBase.ratePercent) : '');
+    setBonus(toBonus(p.rules));
+    setPicking(false);
+    setErrors({});
+  }
 
   const available = BONUS_CATEGORIES.filter((c) => !bonus.some((b) => b.category === c));
   const updateBonus = (i: number, patch: Partial<BonusRule>) =>
@@ -139,6 +158,23 @@ export function CardForm({ initial, submitLabel, onSubmit, onDelete }: Props) {
 
   return (
     <>
+      <Card>
+        <SectionHeader
+          title="Known cards"
+          subtitle="Fills in the bank, fees and cashback rates. Check them against your card's current terms."
+        />
+        <View style={styles.chips}>
+          {CARD_PRESETS.map((p) => (
+            <Chip
+              key={p.id}
+              label={`${p.institution} ${p.nickname}`}
+              selected={presetId === p.id}
+              onPress={() => applyPreset(p)}
+            />
+          ))}
+        </View>
+      </Card>
+
       <Card>
         <SectionHeader title="Card details" />
         <View style={pair}>

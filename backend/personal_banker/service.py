@@ -25,6 +25,8 @@ from .categorize import (
     categorize_statement,
     identify_account,
     load_budget_setup,
+    read_summary,
+    summary_record,
 )
 from .docai import paddle
 from .docai.pipeline import EXTRACTION_ENGINE, Engine, engine_concurrency, extract_page
@@ -131,16 +133,40 @@ def needs_account(library: Library, doc: StoredDocument) -> bool:
     return (budget := library.budget(doc)) is not None and "account" not in budget
 
 
+def needs_summary(library: Library, doc: StoredDocument) -> bool:
+    """Categorized before budget.json kept the statement's period and rewards summary.
+
+    Bank account statements are left out: they don't print rewards, and nothing needs their period yet.
+    """
+    budget = library.budget(doc)
+    return budget is not None and "rewards" not in budget and (budget.get("account") or {}).get("type") != "bank_account"
+
+
+def _any_markdown(library: Library, doc: StoredDocument) -> str | None:
+    """The statement's complete transcription, preferring the current engine's."""
+    engines = [EXTRACTION_ENGINE, *(e for e in get_args(Engine) if e != EXTRACTION_ENGINE)]
+    return next((md for e in engines if (md := library.markdown(doc, e)) is not None), None)
+
+
 def identify_statement_account(library: Library, doc: StoredDocument, client: anthropic.Anthropic) -> bool:
     """Fills in which account a categorized statement is for, from its saved transcription (no re-categorizing).
 
     False when there is no complete transcription to read it from.
     """
-    engines = [EXTRACTION_ENGINE, *(e for e in get_args(Engine) if e != EXTRACTION_ENGINE)]
-    markdown = next((md for e in engines if (md := library.markdown(doc, e)) is not None), None)
-    if markdown is None:
+    if (markdown := _any_markdown(library, doc)) is None:
         return False
-    ledger.set_statement_account(library, doc, account_record(identify_account(client, markdown).output))
+    ledger.set_statement_fields(library, doc, {"account": account_record(identify_account(client, markdown).output)})
+    return True
+
+
+def read_statement_summary(library: Library, doc: StoredDocument, client: anthropic.Anthropic) -> bool:
+    """Fills in a categorized statement's period and rewards summary, from its saved transcription.
+
+    False when there is no complete transcription to read them from.
+    """
+    if (markdown := _any_markdown(library, doc)) is None:
+        return False
+    ledger.set_statement_fields(library, doc, summary_record(read_summary(client, markdown).output))
     return True
 
 

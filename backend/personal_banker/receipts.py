@@ -46,7 +46,10 @@ class ReceiptData(BaseModel):
         description="The last 4 digits of the payment card number printed on the receipt (e.g. from "
         "'MASTERCARD ************1234'). Exactly those 4 digits, never more; null if paid in cash or not printed."
     )
-    category: ExpenseCategory = Field(description="The budget category the purchase belongs in.")
+    category: ExpenseCategory = Field(
+        description="The budget category the purchase belongs in. Car is for the user's car (repairs, parts, "
+        "parking, car wash); fuel and EV charging are Gas & EV charging."
+    )
 
 
 class ReceiptError(ValueError):

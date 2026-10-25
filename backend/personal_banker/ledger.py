@@ -4,7 +4,8 @@ Models mirror src/types.ts in the Expo app (camelCase in JSON). Rows keep the
 user's workbook categories, which the Streamlit pages and the workbook export
 use; the app has its own fixed list, so each row shows under an app category:
 the one picked in the app for that row (its app_category), else the app's
-rule for its merchant, else the mapping of its workbook category below.
+rule for its merchant, else Car for a car cost (CAR_TEXT), else the mapping of
+its workbook category below.
 """
 
 import re
@@ -22,7 +23,9 @@ from .store import Library, StoredDocument
 ExpenseCategory = Literal[
     "Groceries",
     "Food",
+    "Gas & EV charging",
     "Transport",
+    "Car",
     "Shopping",
     "Health",
     "Entertainment",
@@ -30,6 +33,7 @@ ExpenseCategory = Literal[
     "Phone & Internet",
     "Utilities",
     "Housing",
+    "Fees & interest",
     "Other",
 ]
 IncomeCategory = Literal["Work", "Tax refund", "Side income", "Reimbursement", "Other income"]
@@ -41,15 +45,18 @@ INCOME_CATEGORIES: tuple[IncomeCategory, ...] = get_args(IncomeCategory)
 # listed shows under the app category with the same name, else under Other.
 # Income rows use INCOME_CATEGORY_MAP below.
 EXPENSE_CATEGORIES: dict[str, ExpenseCategory] = {
-    "Bank": "Other",
-    "Car maintenance": "Transport",
-    "Car payment": "Transport",
+    "Bank": "Fees & interest",
+    "Car insurance": "Car",
+    "Car lease": "Car",
+    "Car maintenance": "Car",
+    "Car payment": "Car",
+    "Parking": "Car",
     "Childcare": "Other",
     "Clothing": "Shopping",
     "Condo fees": "Housing",
     "Debt": "Other",
     "Electronics": "Shopping",
-    "Gas": "Transport",
+    "Gas": "Gas & EV charging",
     "Gifts": "Shopping",
     "Going out": "Food",
     "Gym": "Health",
@@ -66,6 +73,21 @@ EXPENSE_CATEGORIES: dict[str, ExpenseCategory] = {
     "Travel": "Transport",
     "Work": "Other",
 }
+
+# Car costs the workbook files elsewhere (e.g. parking under "Public transportation")
+# show under Car when the vendor or statement description says so, except rows in
+# CAR_TEXT_KEEPS: gas, which cards reward on its own, and housing (e.g. rent with parking).
+CAR_TEXT_KEEPS: tuple[ExpenseCategory, ...] = ("Car", "Gas & EV charging", "Housing")
+CAR_TEXT = re.compile(
+    r"\b(cars?|automobiles?|vehicles?|parking|green p|car ?wash|407 ?etr)\b"
+    # Parking companies; statements often run a lot number straight after the name.
+    r"|\b(impark|spothero|honk ?mobile|indigo park|precise ?park)"
+    # Not "auto" on its own: statements say "auto pay" and "auto-deposit" too.
+    r"|\bauto ?(insurance|loan|lease|leasing|finance|financing|repair|service|body|parts)\b"
+    r"|\b(toyota|honda|nissan|hyundai|kia|mazda|ford|gm|chevrolet|bmw|mercedes|audi|volkswagen|vw|tesla|subaru|lexus|acura)"
+    r" ?(financial|finance|credit|leasing|lease)\b",
+    re.IGNORECASE,
+)
 
 # Workbook income category -> app income category. Any workbook category starting
 # with "Job" (e.g. "Job Sagard") is Work; one named like an app income category
@@ -139,6 +161,7 @@ class Transaction(AppModel):
     card_id: str
     is_income: bool
     source: Literal["statement", "receipt"] = "statement"
+    statement_id: str | None = None  # the statement (document id) it is on; None for receipt expenses
     receipt_id: str | None = None  # a scanned receipt saved with it (see "Scanned receipts" below)
 
 
@@ -200,6 +223,10 @@ def app_category(kind: str, workbook_category: str | None) -> AppCategory:
     return next((c for c in expense_categories if c.casefold() == name.casefold()), "Other")
 
 
+def _is_car_cost(row: dict) -> bool:
+    return bool(CAR_TEXT.search(f"{row.get('vendor') or ''} | {row.get('statement_description') or ''}"))
+
+
 def _merchant(kind: str, row: dict) -> str:
     name = row.get("vendor") if kind == "expenses" else row.get("source")
     return name or row.get("statement_description") or "Unknown"
@@ -212,10 +239,11 @@ def _transaction(doc_id: str, kind: str, index: int, row: dict, rules: dict[str,
         return None
     amount = float(row.get("amount") or 0)
     merchant = _merchant(kind, row)
-    category = next(
-        (c for c in (row.get("app_category"), rules.get(merchant)) if c in APP_CATEGORIES),
-        app_category(kind, row.get("category")),
-    )
+    picked = next((c for c in (row.get("app_category"), rules.get(merchant)) if c in APP_CATEGORIES), None)
+    category = picked or app_category(kind, row.get("category"))
+    # What the user picked in the app always wins over the CAR_TEXT check.
+    if picked is None and kind == "expenses" and category not in CAR_TEXT_KEEPS and _is_car_cost(row):
+        category = "Car"
     return Transaction(
         id=f"{doc_id}-{_LETTERS[kind]}{index:03d}",
         date=date,
@@ -225,6 +253,7 @@ def _transaction(doc_id: str, kind: str, index: int, row: dict, rules: dict[str,
         merchant=merchant,
         category=category,
         card_id=card_id,
+        statement_id=doc_id,
         # A refund is a negative expense and money out recorded as income is
         # negative, so the sign says which way the money went.
         is_income=(kind == "income") == (amount >= 0),
@@ -455,11 +484,45 @@ def cards(library: Library) -> list[Card]:
     return [*saved, DUMMY_CARD] if unmatched else saved
 
 
-def set_statement_account(library: Library, doc: StoredDocument, account: dict) -> None:
-    """Records which account a categorized statement is for (see categorize.account_record)."""
+def set_statement_fields(library: Library, doc: StoredDocument, fields: dict) -> None:
+    """Adds what was read from a categorized statement later to its budget.json: its "account"
+    (categorize.account_record), or its "period" and "rewards" (categorize.summary_record)."""
     with _write_lock:
         if (budget := library.budget(doc)) is not None:
-            library.save_budget(doc, {**budget, "account": account})
+            library.save_budget(doc, {**budget, **fields})
+
+
+class ReportedRewardLine(AppModel):
+    label: str
+    rate_percent: float | None
+    amount: float
+
+
+class ReportedRewards(AppModel):
+    """The rewards a statement says it earned (StatementRewards.reported in src/types.ts)."""
+
+    program: str | None
+    unit: Literal["dollars", "points", "miles"]
+    earned: float  # the lines added up
+    lines: list[ReportedRewardLine]
+
+
+def statement_rewards(budget: dict) -> ReportedRewards | None:
+    """The rewards summary printed on the statement; None when it prints none or it wasn't read yet."""
+    if not (rewards := budget.get("rewards")):
+        return None
+    lines = [ReportedRewardLine.model_validate(line) for line in rewards.get("lines") or []]
+    return ReportedRewards(
+        program=rewards.get("program"),
+        unit=rewards.get("unit") or "dollars",
+        earned=round(sum(line.amount for line in lines), 2),
+        lines=lines,
+    )
+
+
+def statement_period(budget: dict) -> tuple[str | None, str | None]:
+    period = budget.get("period") or {}
+    return period.get("start"), period.get("end")
 
 
 def reward_rules(library: Library) -> list[RewardRule]:

@@ -59,3 +59,8 @@ export function formatShortDate(date: ISODate) {
   const [, m, d] = parts(date);
   return `${MONTHS_SHORT[m - 1]} ${d}`;
 }
+
+/** With the year, for dates that may be in another one (e.g. a goal's target date): "Apr 30, 2027". */
+export function formatDateWithYear(date: ISODate) {
+  return `${formatShortDate(date)}, ${date.slice(0, 4)}`;
+}

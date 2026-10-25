@@ -11,6 +11,7 @@ import {
   CategoryDonut,
   Divider,
   EmptyState,
+  GoalCard,
   Loading,
   MonthSelector,
   Screen,
@@ -29,6 +30,7 @@ import {
   getCardOptimizer,
   getCards,
   getMonths,
+  getSavingsGoal,
   getSpendSummary,
   getWeeklySpend,
   today,
@@ -52,6 +54,7 @@ export default function Home() {
   const months = useAsync(getMonths);
   const summary = useAsync(() => getSpendSummary(range), month);
   const budgets = useAsync(() => getBudgets(month), month);
+  const goal = useAsync(getSavingsGoal);
   const optimizer = useAsync(() => getCardOptimizer(range), month);
   const cards = useAsync(getCards);
   const alerts = useAsync(() => getAlerts('open'));
@@ -135,6 +138,9 @@ export default function Home() {
           />
         </View>
       )}
+
+      {/* Only once a goal is set; More invites setting one. */}
+      {goal.data && <GoalCard goal={goal.data} onEdit={() => router.push('/savings-goal')} />}
 
       <View style={[styles.grid, { gap }]}>
         <Card style={{ width: half }}>

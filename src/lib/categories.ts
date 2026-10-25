@@ -9,7 +9,9 @@ type IconName = ComponentProps<typeof Ionicons>['name'];
 const ICONS: Record<Category, IconName> = {
   Groceries: 'cart-outline',
   Food: 'restaurant-outline',
-  Transport: 'car-outline',
+  'Gas & EV charging': 'speedometer-outline',
+  Transport: 'bus-outline',
+  Car: 'car-outline',
   Shopping: 'bag-handle-outline',
   Health: 'medkit-outline',
   Entertainment: 'film-outline',
@@ -17,6 +19,7 @@ const ICONS: Record<Category, IconName> = {
   'Phone & Internet': 'wifi-outline',
   Utilities: 'flash-outline',
   Housing: 'home-outline',
+  'Fees & interest': 'calculator-outline',
   Other: 'pricetag-outline',
   Work: 'briefcase-outline',
   'Tax refund': 'receipt-outline',

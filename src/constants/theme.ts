@@ -24,7 +24,9 @@ export const colors = {
 export const categoryColors = {
   Groceries: '#16A34A',
   Food: '#F97316',
+  'Gas & EV charging': '#B45309',
   Transport: '#0EA5E9',
+  Car: '#1D4ED8',
   Shopping: '#A855F7',
   Health: '#EC4899',
   Entertainment: '#EAB308',
@@ -32,6 +34,7 @@ export const categoryColors = {
   'Phone & Internet': '#14B8A6',
   Utilities: '#64748B',
   Housing: '#334155',
+  'Fees & interest': '#78716C',
   Other: '#94A3B8',
   // Income: greens and teals, shown apart from spending.
   Work: '#22C55E',

@@ -8,9 +8,9 @@ Clerk for auth, SurrealDB for the ledger, SurrealDB Agent Memory for long-term m
 
 Current phase: UI + real auth (Clerk) + the Python backend in backend/ (FastAPI over the file
 library the Streamlit pipeline writes; no database yet). Transactions, cards with their reward
-rules (add, edit, delete), statement upload, receipt scanning and the assistant chat come from the
-backend; budgets, bills and alerts aren't in the backend yet, so with it they start empty (additions
-last until reload) and the full demo exists only in mock mode.
+rules (add, edit, delete), statement upload, receipt scanning, budgets, the savings goal and the
+assistant chat come from the backend; bills and alerts aren't in the backend yet, so with it they
+start empty (additions last until reload) and the full demo exists only in mock mode.
 
 ## Rules
 - Expo + Expo Router + TypeScript. Must run on Android (Expo Go) AND web.
@@ -31,7 +31,7 @@ last until reload) and the full demo exists only in mock mode.
 This project uses the `src/` layout (import alias `@/*` -> `src/*`):
 - src/app/ — routes only (Expo Router). `(auth)/sign-in`, `(auth)/sign-up`, `sso-callback`,
   `(tabs)/` with 5 tabs (index, transactions, chat, cards, more), modals: upload-statement,
-  scan-receipt, transaction/[id], add-card, edit-card/[id]. New modal routes must also be registered in
+  scan-receipt, transaction/[id], add-card, edit-card/[id], savings-goal. New modal routes must also be registered in
   src/app/_layout.tsx, inside the signed-in `Stack.Protected` group.
 - Mocked "AI" features live in api.ts (mock mode): chat answers (on-track, restaurants, which card),
   uploadStatement (always 40 latest rows, all already in ledger), scanReceipt (always matches
@@ -40,19 +40,47 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
   backend/personal_banker/receipts.py), and chat goes to POST /api/chat. Pickers
   (expo-document-picker / expo-image-picker) are real.
 - backend/personal_banker/assistant.py — the assistant: Claude (tool runner) with read-only tools over
-  ledger.transactions/cards (list_cards, spending_summary, find_transactions) plus show_headline, which
-  sets the reply's `summary` card. The conversation is library/chat.json (GET/POST/DELETE /api/chat);
-  earlier turns go back to Claude as plain text, without their tool calls. It doesn't know budgets or
-  bills (not in the backend). Replies are plain text (no Markdown): the chat bubble is a plain Text.
+  ledger.transactions/cards (list_cards, spending_summary, find_transactions, budgets_and_goal) plus
+  show_headline, which sets the reply's `summary` card. The conversation is library/chat.json
+  (GET/POST/DELETE /api/chat); earlier turns go back to Claude as plain text, without their tool calls.
+  It doesn't know bills (not in the backend). Replies are plain text (no Markdown): the chat bubble is a plain Text.
+  Cashback questions go through its `cashback` tool (backend/personal_banker/rewards.py): what the
+  statements print is the answer; only spending no printed statement covers gets an estimate (same
+  logic as rewardFor in api.ts, keep them in step), which the assistant must label and caveat.
 - src/components/ — shared UI (Screen, Card, StatTile, ProgressBar, TransactionRow, AlertBanner,
-  Chip, SectionHeader, EmptyState, AuthScreen, CodeForm, Avatar, CardForm: the add/edit card form).
-  Import from `@/components`.
+  Chip, SectionHeader, EmptyState, AuthScreen, CodeForm, Avatar, CardForm: the add/edit card form,
+  GoalCard: the savings goal's progress, on More and, once set, Home). Import from `@/components`.
 - src/constants/theme.ts — design tokens (colors, spacing, radius, fontSize, layout).
 - src/types.ts — domain types mirroring the future DB, plus API response shapes and CATEGORIES.
+  "Gas & EV charging" is its own category (workbook "Gas"), apart from Transport (transit, taxis,
+  rideshare), because cards like CIBC's pay different rates on them. "Car" is the user's car:
+  insurance, financing/lease, maintenance, parking (workbook "Car payment", "Car maintenance"), plus
+  rows the backend's CAR_TEXT pattern (ledger.py) spots in other workbook categories, e.g. parking.
+  "Fees & interest" (workbook "Bank") earns no cashback.
+- Rewards math (api.ts): fees and interest, housing and income earn nothing (NOT_CARD_PAYABLE);
+  refunds take back cashback at the rate the purchase earned, as issuers do. The Cards tab shows each
+  card's latest statement (getStatementRewards): the amount is the statement's own printed rewards
+  summary (Statement.rewards), with the app's estimate per rate beside it (that statement's own
+  transactions, via Transaction.statementId). No printed summary: the estimate is the amount.
+- Statement rewards: extraction saves budget.json "period" and "rewards" (lines as printed, this
+  statement only). Statements categorized before that get them at API startup (_read_summary, one
+  Claude call over the saved transcription; bank-account statements are skipped).
+- Savings goal (one per user): name, amount, startDate (the day it was set), targetDate. Saved is
+  money in minus money out from startDate through the latest transaction (`asOf`: statements arrive
+  late), against a straight-line pace to the target date (goalStatus in api.ts, goal_progress in
+  backend/personal_banker/planning.py; keep them in step). The savings-goal modal suggests monthly
+  budgets with planSavings (src/lib/savings-plan.ts) from getSpendingBaseline (averages over the last
+  3 complete months, refunds netted): discretionary categories are cut first (up to 50%), then
+  everyday needs (up to 15%); fixed costs (housing, car, phone, utilities, fees) never. Saving the
+  goal replaces every budget at once (PUT /api/goal), keeping budgets for categories the plan doesn't
+  list. Budgets and the goal live in library/plan.json (planning.py; GET/PUT /api/budgets/{category},
+  GET/PUT/DELETE /api/goal).
+- src/lib/card-presets.ts — known cards (CARD_PRESETS) with their published cashback; the card form's
+  "Known cards" chips fill in everything but the card's own numbers. The mock Visa uses the CIBC one.
 - src/lib/api.ts — the only data layer. `USE_MOCK` is true when EXPO_PUBLIC_API_URL is unset.
   Backend mode: `apiFetch()` with the Clerk session token; `today()` is the real date. Mock mode:
   fake delay, in-memory copy of mock data (edits persist per session), `today()` is the demo date.
-  Either way summaries, budgets and the optimizer are computed here from transactions.
+  Either way summaries, budget and goal progress and the optimizer are computed here from transactions.
 - src/lib/auth.ts — Clerk helpers for the auth screens: readable error messages, the
   `navigate` callback for finalize()/setActive().
 - src/data/mock.ts — seeded, deterministic Aug 1 – Oct 22 2026 Canadian data. Demo "today"

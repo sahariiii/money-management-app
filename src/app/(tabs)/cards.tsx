@@ -15,14 +15,14 @@ import {
   SectionHeader,
   StatTile,
 } from '@/components';
-import { colors, layout, spacing, typography } from '@/constants/theme';
+import { borderWidth, colors, layout, spacing, typography } from '@/constants/theme';
 import { useAsync } from '@/hooks/use-async';
 import { useLayout } from '@/hooks/use-layout';
-import { getCardOptimizer, getCards, getRewardRules } from '@/lib/api';
+import { getCardOptimizer, getCards, getRewardRules, getStatementRewards } from '@/lib/api';
 import { categoryColor, categoryIcon } from '@/lib/categories';
 import { formatShortDate } from '@/lib/dates';
 import { formatMoney, maskCard } from '@/lib/format';
-import type { Card as CardType, RewardRule } from '@/types';
+import type { Card as CardType, ReportedRewards, RewardRule, StatementRewards } from '@/types';
 
 function ruleLabel(r: RewardRule) {
   const what = r.category === '*' ? 'Everything else' : r.category;
@@ -30,11 +30,74 @@ function ruleLabel(r: RewardRule) {
   return { rate: `${r.ratePercent}%`, what: `${what}${cap}` };
 }
 
+/** An amount in the statement's rewards unit: money for cash back, else e.g. "1,250 points". */
+function formatReward(amount: number, unit: ReportedRewards['unit']) {
+  return unit === 'dollars' ? formatMoney(amount) : `${amount.toLocaleString()} ${unit}`;
+}
+
+/**
+ * A card's latest statement: the amount it says it earned, then each rate with the app's own
+ * estimate beside the statement's figure. Without a printed summary, the estimate is the amount.
+ */
+function LastStatement({ rewards }: { rewards: StatementRewards }) {
+  const { reported } = rewards;
+  const rates = [
+    ...new Set([...rewards.byRate.map((r) => r.ratePercent), ...(reported?.lines ?? []).flatMap((l) => l.ratePercent ?? [])]),
+  ].sort((a, b) => b - a);
+  // Lines that name no rate, e.g. a bonus, are listed by their label.
+  const otherLines = reported?.lines.filter((l) => l.ratePercent === null) ?? [];
+
+  return (
+    <View style={styles.statement}>
+      <Text style={styles.overline}>{rewards.statementName} statement</Text>
+      <Text style={styles.statementTotal}>
+        {reported ? formatReward(reported.earned, reported.unit) : formatMoney(rewards.earned)}
+      </Text>
+      <Text style={styles.caption}>
+        {formatShortDate(rewards.range.from)} – {formatShortDate(rewards.range.to)} ·{' '}
+        {reported ? `as on your statement${reported.program ? ` (${reported.program})` : ''}` : 'estimated from its transactions'}
+      </Text>
+      {rates.map((rate) => {
+        const est = rewards.byRate.find((r) => r.ratePercent === rate);
+        const printed = reported?.lines.filter((l) => l.ratePercent === rate);
+        return (
+          <View key={rate} style={styles.rateRow}>
+            <Text style={styles.rateLabel}>{rate}%</Text>
+            <Text style={styles.rateEstimate}>
+              {est ? `on ${formatMoney(est.spent)} · est. ${formatMoney(est.earned)}` : 'no spending estimated'}
+            </Text>
+            {reported && (
+              <Text style={styles.strong}>
+                {printed && printed.length > 0 ? formatReward(sum(printed.map((l) => l.amount)), reported.unit) : '–'}
+              </Text>
+            )}
+          </View>
+        );
+      })}
+      {otherLines.map((l) => (
+        <View key={l.label} style={styles.rateRow}>
+          <Text style={styles.rateEstimate}>{l.label}</Text>
+          <Text style={styles.strong}>{formatReward(l.amount, reported!.unit)}</Text>
+        </View>
+      ))}
+      {reported && (
+        <Text style={styles.caption}>
+          The app estimated {formatMoney(rewards.earned)} from your categories. Banks set rates by the type of store, so
+          the two can differ.
+        </Text>
+      )}
+    </View>
+  );
+}
+
+const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+
 export default function Cards() {
   const { isWide, contentWidth } = useLayout();
   const cards = useAsync(getCards);
   const rules = useAsync(() => getRewardRules());
   const optimizer = useAsync(() => getCardOptimizer('this-month'));
+  const statementRewards = useAsync(getStatementRewards);
 
   const gap = spacing.lg;
   const half = isWide ? (contentWidth - gap) / 2 : contentWidth;
@@ -70,6 +133,7 @@ export default function Cards() {
               .data!.filter((r) => r.cardId === c.id)
               .sort((a, b) => (a.category === '*' ? 1 : b.category === '*' ? -1 : b.ratePercent - a.ratePercent));
             const earned = opt?.byCard.find((b) => b.cardId === c.id)?.earned;
+            const last = statementRewards.data?.find((s) => s.cardId === c.id);
             return (
               <View key={c.id} style={[styles.cardColumn, { width: half }]}>
                 <PaymentCard card={c} />
@@ -104,9 +168,10 @@ export default function Cards() {
                       );
                     })
                   )}
+                  {last && <LastStatement rewards={last} />}
                   {earned !== undefined && (
                     <Text style={styles.muted}>
-                      Earned this month: <Text style={styles.strong}>{formatMoney(earned)}</Text>
+                      This month so far (estimate): <Text style={styles.strong}>{formatMoney(earned)}</Text>
                     </Text>
                   )}
                 </Card>
@@ -225,7 +290,18 @@ const styles = StyleSheet.create({
   ruleRate: { ...typography.heading, color: colors.primary, minWidth: spacing.xxxl },
   ruleWhat: { ...typography.small, flex: 1 },
   muted: typography.muted,
+  caption: typography.caption,
   strong: typography.label,
+  statement: {
+    gap: spacing.xs,
+    paddingTop: spacing.md,
+    borderTopWidth: borderWidth.hairline,
+    borderTopColor: colors.border,
+  },
+  statementTotal: { ...typography.stat, color: colors.income },
+  rateRow: { flexDirection: 'row', alignItems: 'baseline', gap: spacing.md },
+  rateLabel: { ...typography.label, color: colors.primary, minWidth: spacing.xxxl },
+  rateEstimate: { ...typography.caption, flex: 1 },
   bestRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   bestText: { flex: 1, gap: spacing.xxs },
   missed: { ...typography.label, color: colors.warning },

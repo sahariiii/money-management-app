@@ -21,7 +21,7 @@ import anthropic
 from anthropic import beta_tool
 from anthropic.lib.tools import ToolError
 
-from . import ledger
+from . import ledger, planning, rewards
 from .ledger import APP_CATEGORIES, CASH_CARD_ID, DUMMY_CARD, INCOME_CATEGORIES, AppModel, Transaction
 from .llm import FALLBACK_BETA, MODEL
 from .store import Library
@@ -54,12 +54,34 @@ an income category ({", ".join(INCOME_CATEGORIES)}), except refunds, which are m
 in under the spending category they came back to. The app's totals count refunds \
 as money in, not as less spending; say so when a refund changes the picture.
 - Spending categories: {", ".join(c for c in APP_CATEGORIES if c not in INCOME_CATEGORIES)}. \
-Food is restaurants, cafés, takeout and delivery; Groceries is separate.
+Food is restaurants, cafés, takeout and delivery; Groceries is separate. Gas & EV \
+charging is fuel and charging stations; Transport is transit, taxis and rideshare; Car \
+is the user's car: insurance, financing or lease payments, maintenance, parking and tolls. \
+Fees & interest is bank and card fees and interest charged, which earn no cashback.
 - Card "{CASH_CARD_ID}" is cash (receipts not paid by card). Card "{DUMMY_CARD.id}" \
 ("{DUMMY_CARD.nickname}") holds statements whose account number matches none of the \
 user's cards; if it carries spending that matters to the answer, suggest adding the \
 card's account number in the Cards tab.
-- Budgets and bill reminders aren't available to you yet.
+- budgets_and_goal has their monthly budget per category and their savings goal (they \
+have at most one). Progress toward the goal is money in minus money out since the day \
+they set it, counted up to the latest transaction in the ledger, since statements \
+arrive after the fact; compare it with what a steady pace would have saved by then. \
+They set the goal and budgets under More, Savings goal. Bill reminders aren't \
+available to you yet.
+
+Cashback: always get it from the cashback tool, never work it out from spending and \
+reward rules yourself.
+- What a statement prints (from_statements) is what the bank actually paid: it is the \
+answer. Give it per statement with its period (e.g. "your Oct2026 statement, Sep 14 to \
+Oct 13: $45.65"), since statements follow the card's billing cycle, not calendar months. \
+Never prorate, split or recalculate a printed amount, and don't offer your own figure \
+next to it.
+- Only for spending no statement reports yet (estimate_for_spending_not_on_a_statement) \
+give the tool's estimate, clearly called an estimate, with a short warning: it comes \
+from the app's categories and the reward rules entered for the card, while the bank \
+rates each purchase by the type of store, pays only the base rate on foreign-currency \
+purchases and may apply limits, so the statement can come out different. When an \
+answer has both, give the printed amount and the estimate separately, never as one total.
 
 Good insights are specific: name the categories, merchants and cards behind a change, \
 compare like with like (a month in progress against the same days of the month \
@@ -161,10 +183,11 @@ def _make_tools(library: Library, shown: list[ChatSummary]) -> list:
 
     @beta_tool
     def list_cards() -> str:
-        """The user's cards and how much cashback each earns per category, plus the date range the ledger covers.
+        """The user's cards and the cashback rates entered for each per category, plus the date range the ledger covers.
 
         Use the card ids with the other tools' card_id. A rule with category "*" applies to every
         category without its own rule; cap is the monthly spend that earns that rate (null: no cap).
+        For cashback actually earned, use the cashback tool.
         """
         rules = ledger.reward_rules(library)
         dates = sorted(t.date for t in txs)
@@ -307,6 +330,100 @@ def _make_tools(library: Library, shown: list[ChatSummary]) -> list:
         )
 
     @beta_tool
+    def cashback(start_date: str, end_date: str, card_id: str | None = None) -> str:
+        """Cashback the user's cards earned: the amounts printed on their statements, plus an estimate
+        for card spending in the period that no statement reports yet.
+
+        Statements follow each card's billing cycle (e.g. Sep 14 - Oct 13), not calendar months:
+        every statement whose period overlaps the dates is listed whole, with its period. The
+        estimate only covers transactions in the dates that aren't on a statement with a printed
+        rewards summary, so the two never count the same purchase.
+
+        Args:
+            start_date: First day, YYYY-MM-DD (included).
+            end_date: Last day, YYYY-MM-DD (included).
+            card_id: Only this card (ids from list_cards).
+        """
+        start, end = _day(start_date, "start_date"), _day(end_date, "end_date")
+        check_card(card_id)
+        rules = ledger.reward_rules(library)
+        statements = rewards.statement_rewards(library)
+        reported = {s.statement_id for s in statements if s.reported}
+
+        def period(s: rewards.StatementRewards) -> tuple[str | None, str | None]:
+            """The printed period, else the dates of its transactions."""
+            dates = sorted(t.date for t in txs if t.statement_id == s.statement_id)
+            return s.period_start or (dates[0] if dates else None), s.period_end or (dates[-1] if dates else None)
+
+        result = []
+        for c in cards:
+            if c.is_placeholder or (card_id is not None and c.id != card_id):
+                continue
+            printed = [
+                (s, p)
+                for s in statements
+                if s.card_id == c.id and s.reported and (p := period(s))[0] and p[0] <= end and (p[1] or p[0]) >= start
+            ]
+            if not printed and not any(r.card_id == c.id for r in rules):
+                continue  # no rewards on this card
+            unreported = [t for t in txs if t.card_id == c.id and start <= t.date <= end and t.statement_id not in reported]
+            est = rewards.estimate(unreported, rules, c.id)
+            result.append(
+                {
+                    "card_id": c.id,
+                    "card": names[c.id],
+                    "from_statements": [
+                        {
+                            "statement": s.name,
+                            "period_start": p[0],
+                            "period_end": p[1],
+                            "cashback": s.reported.earned,
+                            "unit": s.reported.unit,
+                            "program": s.reported.program,
+                            "lines": [{"label": line.label, "amount": line.amount} for line in s.reported.lines],
+                        }
+                        for s, p in sorted(printed, key=lambda sp: sp[1][0])
+                    ],
+                    "estimate_for_spending_not_on_a_statement": est.as_dict() if est.first_date else None,
+                }
+            )
+        return json.dumps({"period": {"start_date": start, "end_date": end}, "cards": result}, ensure_ascii=False)
+
+    @beta_tool
+    def budgets_and_goal(month: str) -> str:
+        """The user's monthly budgets with what they spent against each in a month, and their savings goal's progress.
+
+        A budget's spent counts purchases only, as the app's Budgets list does. savings_goal is
+        null when they haven't set one.
+
+        Args:
+            month: The month to check the budgets for, YYYY-MM.
+        """
+        first = _day(f"{month}-01", "month")[:7]
+        spent: dict[str, float] = defaultdict(float)
+        for t in txs:
+            if not t.is_income and t.date.startswith(first):
+                spent[t.category] += t.amount
+        saved_goal = planning.goal(library)
+        return json.dumps(
+            {
+                "month": first,
+                "budgets": [
+                    {
+                        "category": b.category,
+                        "monthly_limit": b.monthly_limit,
+                        "spent": _money(spent[b.category]),
+                        "left": _money(b.monthly_limit - spent[b.category]),
+                        "percent_used": round(100 * spent[b.category] / b.monthly_limit),
+                    }
+                    for b in planning.budgets(library)
+                ],
+                "savings_goal": planning.goal_progress(saved_goal, txs, date.today()) if saved_goal else None,
+            },
+            ensure_ascii=False,
+        )
+
+    @beta_tool
     def show_headline(value: str, label: str, tone: Tone = "primary") -> str:
         """Shows one key number as a small card under your answer. Use it at most once per answer.
 
@@ -318,7 +435,7 @@ def _make_tools(library: Library, shown: list[ChatSummary]) -> list:
         shown[:] = [ChatSummary(value=value[:24], label=label[:60], tone=tone)]
         return "Shown."
 
-    return [list_cards, spending_summary, find_transactions, show_headline]
+    return [list_cards, spending_summary, find_transactions, cashback, budgets_and_goal, show_headline]
 
 
 # ---------------------------------------------------------------------------

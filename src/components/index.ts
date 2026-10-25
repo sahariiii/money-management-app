@@ -13,6 +13,7 @@ export { CodeForm } from './CodeForm';
 export { DetailRow } from './DetailRow';
 export { Divider } from './Divider';
 export { EmptyState } from './EmptyState';
+export { GoalCard } from './GoalCard';
 export { Loading } from './Loading';
 export { MonthSelector } from './MonthSelector';
 export { PaymentCard } from './PaymentCard';
