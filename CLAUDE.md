@@ -31,25 +31,34 @@ start empty (additions last until reload) and the full demo exists only in mock 
 This project uses the `src/` layout (import alias `@/*` -> `src/*`):
 - src/app/ — routes only (Expo Router). `(auth)/sign-in`, `(auth)/sign-up`, `sso-callback`,
   `(tabs)/` with 5 tabs (index, transactions, chat, cards, more), modals: upload-statement,
-  scan-receipt, transaction/[id], add-card, edit-card/[id], savings-goal. New modal routes must also be registered in
+  scan-receipt, transaction/[id], add-card, edit-card/[id], savings-goal, chat-history. New modal routes must also be registered in
   src/app/_layout.tsx, inside the signed-in `Stack.Protected` group.
 - Mocked "AI" features live in api.ts (mock mode): chat answers (on-track, restaurants, which card),
   uploadStatement (always 40 latest rows, all already in ledger), scanReceipt (always matches
   the Gusto 101 transaction). With the backend, uploadStatement really uploads and waits for the
   backend to finish, scanReceipt sends the photo to POST /api/receipts/scan (Claude vision via
-  backend/personal_banker/receipts.py), and chat goes to POST /api/chat. Pickers
+  backend/personal_banker/receipts.py), and chat goes to POST /api/chats. Pickers
   (expo-document-picker / expo-image-picker) are real.
 - backend/personal_banker/assistant.py — the assistant: Claude (tool runner) with read-only tools over
   ledger.transactions/cards (list_cards, spending_summary, find_transactions, budgets_and_goal) plus
-  show_headline, which sets the reply's `summary` card. The conversation is library/chat.json
-  (GET/POST/DELETE /api/chat); earlier turns go back to Claude as plain text, without their tool calls.
+  show_headline, which sets the reply's `summary` card. Conversations (ChatThread), like Claude's and
+  ChatGPT's history: one file each in library/chats/<chat_hex>.json with a title Claude sets on the
+  first question (name_conversation, always in the tool list so the cache holds; the context says
+  when the conversation is new), else the question shortened. GET /api/chats, GET/PATCH/DELETE
+  /api/chats/{id}, POST /api/chats (first question; nothing is saved if it fails), POST
+  /api/chats/{id}/messages. The old single library/chat.json becomes one conversation on first list.
+  Assistant tab: the list beside the chat on wide screens (ChatHistoryList), the `chat-history` modal
+  on phones, which returns via router.dismissTo('/chat', { thread, at }). Mock mode seeds two chats.
+  Earlier turns of the same conversation go back to Claude as plain text, without their tool calls.
   It doesn't know bills (not in the backend). Replies are plain text (no Markdown): the chat bubble is a plain Text.
   Cashback questions go through its `cashback` tool (backend/personal_banker/rewards.py): what the
   statements print is the answer; only spending no printed statement covers gets an estimate (same
   logic as rewardFor in api.ts, keep them in step), which the assistant must label and caveat.
 - src/components/ — shared UI (Screen, Card, StatTile, ProgressBar, TransactionRow, AlertBanner,
   Chip, SectionHeader, EmptyState, AuthScreen, CodeForm, Avatar, CardForm: the add/edit card form,
-  GoalCard: the savings goal's progress, on More and, once set, Home). Import from `@/components`.
+  GoalCard: the savings goal's progress, on More and, once set, Home, ChatHistoryList: past
+  conversations grouped Today / Yesterday / Previous 7 and 30 days / by month, with rename and
+  delete). Import from `@/components`.
 - src/constants/theme.ts — design tokens (colors, spacing, radius, fontSize, layout).
 - src/types.ts — domain types mirroring the future DB, plus API response shapes and CATEGORIES.
   "Gas & EV charging" is its own category (workbook "Gas"), apart from Transport (transit, taxis,
@@ -95,6 +104,16 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
   category: check `isIncome` for direction, `isIncomeCategory()` for the kind of category. Refunds are
   isIncome with a spending category. App edits go in a row's `app_category`, "always" rules in library/merchant_rules.json.
   Refunds (negative expenses) become isIncome: true, since app amounts are always positive.
+  Refunds are never income: link_refunds (ledger.py, run on every read) links each one to the purchase
+  it returns (same merchant ignoring case/punctuation, on or before it, within RETURN_DAYS = 120, with
+  enough not yet returned; a whole return, then the same card, then the latest wins), setting
+  `refundOf` on the refund and `refundedAmount`/`refundIds` on the purchase. Spending everywhere
+  (summaries, budgets, weekly, the plan baseline, the assistant) uses netSpending (src/lib/refunds.ts,
+  net_spending in ledger.py): a purchase less what came back; a refund with no purchase found comes off
+  spending on its own date; income counts income categories only. Activity shows a refund in grey
+  ("Return of Oct 11 purchase") and a fully returned purchase struck through. The categorizer is told
+  that money in from a merchant is a refund (negative expense) named like the purchase's vendor.
+  The mock seeds two returns (Winners, whole; Canadian Tire, partly) with the links set in mock.ts.
   Cards and reward rules live in library/cards.json. A statement's transactions go on the card whose
   `account_last4` equals the statement's (budget.json "account".last4, from the categorizer), worked
   out on every read, so editing a card re-links at once. Unmatched statements' transactions go on

@@ -66,9 +66,12 @@ rules didn't recognise, one per line as \
 for every row, as an expense, as income, or as skipped, using its row number.
 
 How to decide:
-- Expenses: purchases, bills, subscriptions, fees and interest charged. A \
-money_in row that refunds an earlier purchase is an expense in the category of \
-what was refunded; it is recorded as a negative amount.
+- Expenses: purchases, bills, subscriptions, fees and interest charged. Money \
+in from a store or other merchant is a refund (a return, a cancelled order, a \
+fee rebate or a reversed charge), even when the purchase isn't on this \
+statement: it is an expense in the category of what was refunded, recorded as a \
+negative amount, never income. Name its vendor exactly as the purchase's (or as \
+the user names that merchant), so the app can match the return to the purchase.
 - Income: pay, benefits, rental income, interest earned and other money \
 received from someone else.
 - Skipped: money moving between the user's own accounts and payments made to \

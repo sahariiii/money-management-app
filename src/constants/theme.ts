@@ -153,6 +153,8 @@ export const layout = {
   /** Width / height of a real payment card. */
   cardAspectRatio: 1.586,
   chatBubbleMaxWidth: '82%',
+  /** The conversation list beside the chat on wide screens. */
+  chatSidebarWidth: 260,
   inputHeight: 44,
   receiptMaxHeight: 320,
   monthLabelWidth: 120,

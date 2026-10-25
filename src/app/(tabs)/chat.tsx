@@ -1,13 +1,22 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useNavigation } from 'expo-router';
+import { router, useLocalSearchParams, useNavigation } from 'expo-router';
 import { useHeaderHeight } from 'expo-router/react-navigation';
-import { useLayoutEffect, useRef, useState } from 'react';
-import { FlatList, KeyboardAvoidingView, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { FlatList, KeyboardAvoidingView, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { AlertBanner, Button, Chip, EmptyState, Loading, Screen, TypingDots, useToast } from '@/components';
+import { AlertBanner, Button, ChatHistoryList, Chip, EmptyState, Loading, Screen, TypingDots, useToast } from '@/components';
 import { borderWidth, colors, fontSize, layout, radius, spacing, typography } from '@/constants/theme';
 import { useAsync } from '@/hooks/use-async';
-import { CHAT_SUGGESTIONS, clearChat, getChatHistory, sendChatMessage, USE_MOCK } from '@/lib/api';
+import { useLayout } from '@/hooks/use-layout';
+import {
+  CHAT_SUGGESTIONS,
+  deleteChatThread,
+  getChatThread,
+  getChatThreads,
+  renameChatThread,
+  sendChatMessage,
+  USE_MOCK,
+} from '@/lib/api';
 import type { ChatMessage } from '@/types';
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -49,136 +58,231 @@ function Welcome({ onPick }: { onPick: (q: string) => void }) {
   );
 }
 
+/** Which conversation a pending answer or a failed question belongs to; 'new' for a new chat. */
+const keyOf = (threadId: string | null) => threadId ?? 'new';
+
 export default function Chat() {
   const headerHeight = useHeaderHeight();
   const navigation = useNavigation();
   const toast = useToast();
-  const history = useAsync(getChatHistory);
-  // Local list once the user starts chatting; history seeds it after tab switches.
-  const [local, setLocal] = useState<ChatMessage[] | null>(null);
+  const { isWide } = useLayout();
+  // Set by the Chats screen (phones): `thread` is a conversation id or 'new'; `at` makes a repeat pick count.
+  const params = useLocalSearchParams<{ thread?: string; at?: string }>();
+
+  // The open conversation; null is a new chat, which is saved once its first answer is in.
+  const [threadId, setThreadId] = useState<string | null>(null);
+  const [seenAt, setSeenAt] = useState(params.at);
+  const threads = useAsync(getChatThreads);
+  // Tagged with the id it's for: useAsync keeps the previous conversation's data while the next one loads.
+  const detail = useAsync(async () => ({ forId: threadId, thread: threadId ? await getChatThread(threadId) : null }), keyOf(threadId));
+  // Messages sent and received in this session for one conversation; the saved ones seed it.
+  const [local, setLocal] = useState<{ threadId: string | null; messages: ChatMessage[] } | null>(null);
   const [draft, setDraft] = useState('');
-  const [typing, setTyping] = useState(false);
+  // The conversation whose answer is on its way.
+  const [waitingFor, setWaitingFor] = useState<string | null>(null);
   // The last question when its answer failed; it stays in the list so it can be sent again.
-  const [failed, setFailed] = useState<{ question: string; error: string } | null>(null);
+  const [failed, setFailed] = useState<{ key: string; question: string; error: string } | null>(null);
   const listRef = useRef<FlatList<ChatMessage>>(null);
+  // The open conversation, for answers that arrive after the user moved on.
+  const openKey = useRef(keyOf(threadId));
+  useEffect(() => {
+    openKey.current = keyOf(threadId);
+  }, [threadId]);
 
-  const messages = local ?? history.data ?? [];
-
-  async function ask(q: string) {
+  function open(id: string | null) {
+    setThreadId(id);
     setFailed(null);
-    setTyping(true);
+  }
+
+  // A pick from the Chats screen.
+  if (params.at !== seenAt) {
+    setSeenAt(params.at);
+    open(params.thread && params.thread !== 'new' ? params.thread : null);
+  }
+
+  const key = keyOf(threadId);
+  const fromLocal = local && local.threadId === threadId ? local.messages : null;
+  const loaded = detail.data && detail.data.forId === threadId ? detail.data : null;
+  const saved = loaded?.thread?.messages ?? null;
+  const messages = fromLocal ?? saved ?? [];
+  const loadingThread = threadId !== null && !fromLocal && !saved;
+  const notFound = loadingThread && loaded !== null && loaded.thread === null;
+  const typing = waitingFor === key;
+  const title = threadId ? (threads.data?.find((t) => t.id === threadId)?.title ?? loaded?.thread?.title) : undefined;
+
+  async function ask(q: string, asked: string | null, sent: ChatMessage[]) {
+    const askedKey = keyOf(asked);
+    setFailed(null);
+    setWaitingFor(askedKey);
     try {
-      const reply = await sendChatMessage(q);
-      setLocal((m) => [...(m ?? []), reply]);
+      const reply = await sendChatMessage(q, asked);
+      threads.reload();
+      if (openKey.current === askedKey) {
+        // A new chat now has its id.
+        setThreadId(reply.thread.id);
+        setLocal({ threadId: reply.thread.id, messages: [...sent, reply.message] });
+      } else {
+        // The user moved on; the answer is saved and loads when they come back.
+        setLocal((l) => (l && l.threadId === asked ? null : l));
+      }
     } catch (e) {
-      setFailed({ question: q, error: errorText(e) });
+      setFailed({ key: askedKey, question: q, error: errorText(e) });
     } finally {
-      setTyping(false);
+      setWaitingFor((w) => (w === askedKey ? null : w));
     }
   }
 
   function send(text: string) {
     const q = text.trim();
-    if (!q || typing) return;
+    if (!q || waitingFor !== null) return;
     setDraft('');
     const mine: ChatMessage = { id: `local_${Date.now()}`, role: 'user', text: q, createdAt: new Date().toISOString() };
-    setLocal([...messages, mine]);
-    void ask(q);
+    const sent = [...messages, mine];
+    setLocal({ threadId, messages: sent });
+    void ask(q, threadId, sent);
   }
 
-  const canSend = draft.trim().length > 0 && !typing;
-  const canClear = messages.length > 0 && !typing;
+  async function rename(id: string, newTitle: string) {
+    await renameChatThread(id, newTitle);
+    threads.reload();
+  }
+
+  async function remove(id: string) {
+    await deleteChatThread(id);
+    threads.reload();
+    if (id === threadId) {
+      open(null);
+      setLocal(null);
+    }
+    toast('Chat deleted');
+  }
+
+  const canSend = draft.trim().length > 0 && waitingFor === null;
+  const canStartNew = (messages.length > 0 || threadId !== null) && !typing;
 
   useLayoutEffect(() => {
-    async function startOver() {
-      try {
-        await clearChat();
-        setLocal([]);
-        setFailed(null);
-      } catch (e) {
-        toast(`Couldn't clear the chat: ${errorText(e)}`);
-      }
-    }
     navigation.setOptions({
-      headerRight: canClear
-        ? () => (
-            <Button label="New chat" icon="create-outline" variant="ghost" size="sm" style={styles.headerAction} onPress={startOver} />
-          )
-        : undefined,
+      headerTitle: title ?? 'Assistant',
+      // Wide screens list the chats beside the conversation instead.
+      headerRight: isWide
+        ? undefined
+        : () => (
+            <View style={styles.headerActions}>
+              <Button
+                label="Chats"
+                icon="chatbubbles-outline"
+                variant="ghost"
+                size="sm"
+                onPress={() => router.push({ pathname: '/chat-history', params: { active: threadId ?? '' } })}
+              />
+              {canStartNew && <Button label="New" icon="create-outline" variant="ghost" size="sm" onPress={() => open(null)} />}
+            </View>
+          ),
     });
-  }, [navigation, canClear, toast]);
+  }, [navigation, isWide, title, threadId, canStartNew]);
 
-  const empty = history.data ? (
-    <Welcome onPick={send} />
-  ) : history.error ? (
-    <EmptyState
-      icon="cloud-offline-outline"
-      title="Couldn't load the conversation"
-      message={errorText(history.error)}
-      actionLabel="Try again"
-      onAction={history.reload}
-    />
+  const empty = loadingThread ? (
+    notFound ? (
+      <EmptyState
+        icon="chatbubbles-outline"
+        title="Conversation not found"
+        message="It may have been deleted."
+        actionLabel="New chat"
+        onAction={() => open(null)}
+      />
+    ) : detail.error ? (
+      <EmptyState
+        icon="cloud-offline-outline"
+        title="Couldn't load the conversation"
+        message={errorText(detail.error)}
+        actionLabel="Try again"
+        onAction={detail.reload}
+      />
+    ) : (
+      <Loading />
+    )
   ) : (
-    <Loading />
+    <Welcome onPick={send} />
+  );
+
+  const conversation = (
+    <View style={styles.flex}>
+      <FlatList
+        ref={listRef}
+        style={styles.flex}
+        contentContainerStyle={styles.list}
+        data={messages}
+        keyExtractor={(m) => m.id}
+        renderItem={({ item }) => <Bubble message={item} />}
+        ListEmptyComponent={empty}
+        ListFooterComponent={
+          typing ? (
+            <View style={[styles.bubble, styles.theirs, !USE_MOCK && styles.thinking]}>
+              <TypingDots />
+              {/* With the backend an answer can take half a minute; say what's going on. */}
+              {!USE_MOCK && <Text style={styles.thinkingText}>Looking through your transactions…</Text>}
+            </View>
+          ) : failed && failed.key === key ? (
+            <AlertBanner
+              tone="danger"
+              title="No answer this time"
+              message={failed.error}
+              actions={[
+                // The question is still in the list; only the answer is asked for again.
+                { label: 'Try again', onPress: () => void ask(failed.question, threadId, messages) },
+                { label: 'Dismiss', onPress: () => setFailed(null) },
+              ]}
+            />
+          ) : undefined
+        }
+        onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
+        keyboardShouldPersistTaps="handled"
+      />
+
+      <View style={styles.inputBar}>
+        <TextInput
+          style={styles.input}
+          value={draft}
+          onChangeText={setDraft}
+          placeholder="Ask about your money…"
+          placeholderTextColor={colors.muted}
+          returnKeyType="send"
+          onSubmitEditing={() => send(draft)}
+          submitBehavior="submit"
+          accessibilityLabel="Message"
+        />
+        <Pressable
+          onPress={() => send(draft)}
+          disabled={!canSend}
+          accessibilityRole="button"
+          accessibilityLabel="Send"
+          accessibilityState={{ disabled: !canSend }}
+          style={({ pressed }) => [styles.send, !canSend && styles.sendDisabled, pressed && styles.pressed]}>
+          <Ionicons name="arrow-up" size={layout.iconSize} color={colors.onPrimary} />
+        </Pressable>
+      </View>
+    </View>
   );
 
   return (
     // "padding" on Android too: with edge-to-edge (SDK 54+) the window no longer resizes for the keyboard.
     <KeyboardAvoidingView style={styles.flex} behavior="padding" keyboardVerticalOffset={headerHeight}>
-      <Screen scroll={false} width="narrow" contentStyle={styles.content}>
-        <FlatList
-          ref={listRef}
-          style={styles.flex}
-          contentContainerStyle={styles.list}
-          data={messages}
-          keyExtractor={(m) => m.id}
-          renderItem={({ item }) => <Bubble message={item} />}
-          ListEmptyComponent={empty}
-          ListFooterComponent={
-            typing ? (
-              <View style={[styles.bubble, styles.theirs, !USE_MOCK && styles.thinking]}>
-                <TypingDots />
-                {/* With the backend an answer can take half a minute; say what's going on. */}
-                {!USE_MOCK && <Text style={styles.thinkingText}>Looking through your transactions…</Text>}
-              </View>
-            ) : failed ? (
-              <AlertBanner
-                tone="danger"
-                title="No answer this time"
-                message={failed.error}
-                actions={[
-                  { label: 'Try again', onPress: () => void ask(failed.question) },
-                  { label: 'Dismiss', onPress: () => setFailed(null) },
-                ]}
-              />
-            ) : undefined
-          }
-          onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
-          keyboardShouldPersistTaps="handled"
-        />
-
-        <View style={styles.inputBar}>
-          <TextInput
-            style={styles.input}
-            value={draft}
-            onChangeText={setDraft}
-            placeholder="Ask about your money…"
-            placeholderTextColor={colors.muted}
-            returnKeyType="send"
-            onSubmitEditing={() => send(draft)}
-            submitBehavior="submit"
-            accessibilityLabel="Message"
-          />
-          <Pressable
-            onPress={() => send(draft)}
-            disabled={!canSend}
-            accessibilityRole="button"
-            accessibilityLabel="Send"
-            accessibilityState={{ disabled: !canSend }}
-            style={({ pressed }) => [styles.send, !canSend && styles.sendDisabled, pressed && styles.pressed]}>
-            <Ionicons name="arrow-up" size={layout.iconSize} color={colors.onPrimary} />
-          </Pressable>
-        </View>
+      <Screen scroll={false} width={isWide ? 'default' : 'narrow'} contentStyle={isWide ? styles.contentWide : styles.content}>
+        {isWide && (
+          <ScrollView style={styles.sidebar} contentContainerStyle={styles.sidebarContent} keyboardShouldPersistTaps="handled">
+            <ChatHistoryList
+              threads={threads.data}
+              error={threads.error}
+              onRetry={threads.reload}
+              activeId={threadId}
+              onOpen={open}
+              onNewChat={() => open(null)}
+              onRename={rename}
+              onDelete={remove}
+            />
+          </ScrollView>
+        )}
+        {conversation}
       </Screen>
     </KeyboardAvoidingView>
   );
@@ -187,6 +291,15 @@ export default function Chat() {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   content: { flex: 1, paddingBottom: spacing.md, gap: spacing.md },
+  contentWide: { flex: 1, flexDirection: 'row', paddingBottom: spacing.md, gap: spacing.lg },
+  sidebar: {
+    width: layout.chatSidebarWidth,
+    flexGrow: 0,
+    borderRightWidth: borderWidth.hairline,
+    borderRightColor: colors.border,
+  },
+  sidebarContent: { paddingRight: spacing.md, paddingBottom: spacing.md },
+  headerActions: { flexDirection: 'row', marginRight: spacing.sm },
   list: { flexGrow: 1, gap: spacing.md, paddingBottom: spacing.sm },
   bubble: {
     maxWidth: layout.chatBubbleMaxWidth,
@@ -205,7 +318,6 @@ const styles = StyleSheet.create({
   },
   thinking: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   thinkingText: typography.caption,
-  headerAction: { marginRight: spacing.sm },
   bubbleText: typography.body,
   mineText: { color: colors.onPrimary },
   summary: {

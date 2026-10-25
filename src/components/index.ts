@@ -8,6 +8,7 @@ export { Card } from './Card';
 export { CardForm } from './CardForm';
 export { CategoryBadge } from './CategoryBadge';
 export { CategoryDonut } from './CategoryDonut';
+export { ChatHistoryList } from './ChatHistoryList';
 export { Chip } from './Chip';
 export { CodeForm } from './CodeForm';
 export { DetailRow } from './DetailRow';

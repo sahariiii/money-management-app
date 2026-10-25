@@ -13,11 +13,17 @@ type Props = {
   /** Always positive; direction comes from isIncome. */
   amount: number;
   isIncome: boolean;
+  /**
+   * refund: money back for a purchase, shown neutral rather than as income. returned: a purchase
+   * that all came back, shown struck through since it no longer counts as spending.
+   */
+  variant?: 'refund' | 'returned';
   currency?: string;
   onPress?: () => void;
 };
 
-export function TransactionRow({ merchant, category, subtitle, amount, isIncome, currency, onPress }: Props) {
+export function TransactionRow({ merchant, category, subtitle, amount, isIncome, variant, currency, onPress }: Props) {
+  const color = variant ? colors.muted : isIncome ? colors.income : colors.expense;
   return (
     <Pressable
       onPress={onPress}
@@ -33,7 +39,7 @@ export function TransactionRow({ merchant, category, subtitle, amount, isIncome,
           {subtitle}
         </Text>
       </View>
-      <Text style={[styles.amount, { color: isIncome ? colors.income : colors.expense }]}>
+      <Text style={[styles.amount, { color }, variant === 'returned' && styles.struck]}>
         {isIncome ? '+' : '−'}
         {formatMoney(amount, currency)}
       </Text>
@@ -48,4 +54,5 @@ const styles = StyleSheet.create({
   merchant: typography.subheading,
   meta: typography.caption,
   amount: typography.subheading,
+  struck: { textDecorationLine: 'line-through' },
 });

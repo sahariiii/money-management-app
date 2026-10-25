@@ -17,7 +17,9 @@
       receipts.json            expenses added from scanned receipts in the mobile app
       receipts/<scan id>.jpg   a scanned receipt's photo (upright, at most 1568 px)
       receipts/<scan id>.json  what was read from it, and the transaction it belongs to
-      chat.json                the conversation with the app's assistant
+      chats/<chat id>.json     one conversation with the app's assistant: title and messages
+                               (chat.json, the single conversation before there were several,
+                               becomes one of them)
       plan.json                the mobile app's monthly budgets and its savings goal
 
 The folder is configurable with PERSONAL_BANKER_LIBRARY and is git-ignored.
@@ -269,13 +271,30 @@ class Library:
 
     # --- Assistant chat ------------------------------------------------------------------
 
-    def chat(self) -> list[dict]:
-        """The assistant conversation as the app shows it, oldest first (see assistant.py)."""
-        path = self.root / "chat.json"
-        return json.loads(path.read_text(encoding="utf-8"))["messages"] if path.exists() else []
+    # Ids are checked by the caller (assistant.is_chat_id) before they reach a path.
 
-    def save_chat(self, messages: list[dict]) -> None:
-        _write_json(self.root / "chat.json", {"messages": messages})
+    def chats(self) -> list[dict]:
+        """Every conversation with the assistant, in no particular order (see assistant.py)."""
+        folder = self.root / "chats"
+        return [json.loads(p.read_text(encoding="utf-8")) for p in folder.glob("*.json")] if folder.exists() else []
+
+    def chat(self, chat_id: str) -> dict | None:
+        path = self.root / "chats" / f"{chat_id}.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+    def save_chat(self, chat: dict) -> None:
+        _write_json(self.root / "chats" / f"{chat['id']}.json", chat)
+
+    def delete_chat(self, chat_id: str) -> None:
+        (self.root / "chats" / f"{chat_id}.json").unlink(missing_ok=True)
+
+    def legacy_chat(self) -> list[dict] | None:
+        """The messages of chat.json, the one conversation kept before there were several; None once moved."""
+        path = self.root / "chat.json"
+        return json.loads(path.read_text(encoding="utf-8"))["messages"] if path.exists() else None
+
+    def remove_legacy_chat(self) -> None:
+        (self.root / "chat.json").unlink(missing_ok=True)
 
     # --- Budgets and savings goal --------------------------------------------------------
 

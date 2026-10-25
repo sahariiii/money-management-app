@@ -20,6 +20,7 @@ import {
   alerts as seedAlerts,
   budgets as seedBudgets,
   cards as seedCards,
+  chats as seedChats,
   recurringBills as seedBills,
   rewardRules as seedRules,
   transactions as seedTransactions,
@@ -27,6 +28,7 @@ import {
 import { addDays, daysFrom, formatMonth, lastDayOf, shiftMonth, weekStart } from '@/lib/dates';
 import { INCOME_CATEGORIES, isIncomeCategory } from '@/types';
 import { formatMoney } from '@/lib/format';
+import { isEarned, isRefund, netSpending } from '@/lib/refunds';
 import { monthsBetween } from '@/lib/savings-plan';
 import type {
   Alert,
@@ -38,6 +40,9 @@ import type {
   CategorySpend,
   CategoryUpdate,
   ChatMessage,
+  ChatReply,
+  ChatThread,
+  ChatThreadDetail,
   DateRange,
   FeeCheck,
   ISODate,
@@ -158,6 +163,9 @@ function query(params: Record<string, string | number | undefined>): string {
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
+/** A conversation as the mock keeps it; mockThread lists it. */
+type MockChat = { id: string; title: string; messages: ChatMessage[] };
+
 const db: {
   transactions: Transaction[];
   alerts: Alert[];
@@ -166,7 +174,7 @@ const db: {
   budgets: Budget[];
   goal: SavingsGoal | null;
   recurringBills: RecurringBill[];
-  chat: ChatMessage[];
+  chats: MockChat[];
   /** merchant -> category, applied when the user picks "always for this merchant". */
   merchantRules: Record<string, Category>;
 } = USE_MOCK
@@ -178,10 +186,10 @@ const db: {
       budgets: clone(seedBudgets),
       goal: null,
       recurringBills: clone(seedBills),
-      chat: [],
+      chats: clone(seedChats),
       merchantRules: {},
     }
-  : { transactions: [], alerts: [], cards: [], rewardRules: [], budgets: [], goal: null, recurringBills: [], chat: [], merchantRules: {} };
+  : { transactions: [], alerts: [], cards: [], rewardRules: [], budgets: [], goal: null, recurringBills: [], chats: [], merchantRules: {} };
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 /** Fake network latency for mock data. */
@@ -237,7 +245,6 @@ export function resolveRange(range: RangePreset | DateRange): DateRange {
 }
 
 const inRange = (t: Transaction, { from, to }: DateRange) => t.date >= from && t.date <= to;
-const expenses = (txs: Transaction[]) => txs.filter((t) => !t.isIncome);
 
 /** Days in a range, counting both ends. */
 const daysIn = ({ from, to }: DateRange) => daysFrom(from, to) + 1;
@@ -369,36 +376,44 @@ export async function updateCategory(
 // ---------------------------------------------------------------------------
 // Summaries
 
+/**
+ * Spending nets returns out (netSpending): a returned purchase adds nothing. Income is money in
+ * under income categories only; refunds aren't income.
+ */
 function summarize(all: Transaction[], range: DateRange): SpendSummary {
   const txs = all.filter((t) => inRange(t, range));
-  const spent = expenses(txs);
-  const totalSpent = sum(spent.map((t) => t.amount));
-  const totalIncome = sum(txs.filter((t) => t.isIncome).map((t) => t.amount));
+  const spending = txs.map((t) => [t, netSpending(t)] as const).filter(([, amount]) => amount !== 0);
+  const earned = txs.filter(isEarned);
+  const totalSpent = sum(spending.map(([, amount]) => amount));
+  const totalIncome = sum(earned.map((t) => t.amount));
 
   const byCat = new Map<Category, { amount: number; count: number }>();
   const byMerchant = new Map<string, { amount: number; count: number }>();
-  for (const t of spent) {
+  for (const [t, amount] of spending) {
     const c = byCat.get(t.category) ?? { amount: 0, count: 0 };
-    byCat.set(t.category, { amount: c.amount + t.amount, count: c.count + 1 });
+    byCat.set(t.category, { amount: c.amount + amount, count: c.count + 1 });
     const m = byMerchant.get(t.merchant) ?? { amount: 0, count: 0 };
-    byMerchant.set(t.merchant, { amount: m.amount + t.amount, count: m.count + 1 });
+    byMerchant.set(t.merchant, { amount: m.amount + amount, count: m.count + 1 });
   }
   const incomeByCat = new Map<Category, { amount: number; count: number }>();
-  for (const t of txs.filter((x) => x.isIncome)) {
+  for (const t of earned) {
     const c = incomeByCat.get(t.category) ?? { amount: 0, count: 0 };
     incomeByCat.set(t.category, { amount: c.amount + t.amount, count: c.count + 1 });
   }
 
   const byMonthMap = new Map<YearMonth, MonthTotals>();
-  for (const t of txs) {
+  const monthOf = (t: Transaction) => {
     const month = t.date.slice(0, 7);
     const row = byMonthMap.get(month) ?? { month, spent: 0, income: 0 };
-    if (t.isIncome) row.income += t.amount;
-    else row.spent += t.amount;
     byMonthMap.set(month, row);
-  }
+    return row;
+  };
+  for (const [t, amount] of spending) monthOf(t).spent += amount;
+  for (const t of earned) monthOf(t).income += t.amount;
 
+  // A category or merchant can come out at 0 or below when only a refund for it falls in the range.
   const byCategory: CategorySpend[] = [...byCat]
+    .filter(([, v]) => v.amount > 0.005)
     .map(([category, v]) => ({
       category,
       amount: round2(v.amount),
@@ -417,6 +432,7 @@ function summarize(all: Transaction[], range: DateRange): SpendSummary {
     .sort((a, b) => b.amount - a.amount);
 
   const topMerchants: MerchantSpend[] = [...byMerchant]
+    .filter(([, v]) => v.amount > 0.005)
     .map(([merchant, v]) => ({ merchant, amount: round2(v.amount), count: v.count }))
     .sort((a, b) => b.amount - a.amount)
     .slice(0, 5);
@@ -467,24 +483,25 @@ export async function getWeeklySpend(
   const weeks = new Map<ISODate, number>();
   // Seed every week in range so quiet weeks show as 0 instead of disappearing.
   for (let w = r.from; w <= r.to; w = addDays(w, 7)) weeks.set(w, 0);
-  for (const t of expenses(txs.filter((t) => inRange(t, r)))) {
+  for (const t of txs.filter((t) => inRange(t, r))) {
     if (excludeCategories.includes(t.category)) continue;
     const w = weekStart(t.date);
-    weeks.set(w, (weeks.get(w) ?? 0) + t.amount);
+    weeks.set(w, (weeks.get(w) ?? 0) + netSpending(t));
   }
   return [...weeks]
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([start, spent]) => ({ weekStart: start, spent: round2(spent) }));
+    .map(([start, spent]) => ({ weekStart: start, spent: round2(Math.max(0, spent)) }));
 }
 
 // ---------------------------------------------------------------------------
 // Budgets and the savings goal
 
+/** Spent against a budget is purchases less what was returned (netSpending). */
 function budgetStatus(all: Transaction[], budgets: Budget[], month: YearMonth): BudgetStatus[] {
   const range = { from: `${month}-01`, to: lastDayOf(month) };
-  const spent = expenses(all.filter((t) => inRange(t, range)));
+  const txs = all.filter((t) => inRange(t, range));
   return budgets.map((b) => {
-    const total = sum(spent.filter((t) => t.category === b.category).map((t) => t.amount));
+    const total = Math.max(0, sum(txs.filter((t) => t.category === b.category).map(netSpending)));
     return {
       ...b,
       month,
@@ -549,12 +566,12 @@ export async function getSpendingBaseline(): Promise<SpendingBaseline> {
   if (!months.length) return { months, monthlyIncome: 0, categories: [] };
 
   const txs = all.filter((t) => inRange(t, { from: `${months[0]}-01`, to: lastDayOf(months[months.length - 1]) }));
-  const income = sum(txs.filter((t) => t.isIncome && isIncomeCategory(t.category)).map((t) => t.amount));
-  // Refunds come off the spending they came back to.
+  const income = sum(txs.filter(isEarned).map((t) => t.amount));
+  // Returns come off the spending they came back to.
   const byCategory = new Map<Category, number>();
   for (const t of txs) {
     if (isIncomeCategory(t.category)) continue;
-    byCategory.set(t.category, (byCategory.get(t.category) ?? 0) + sign(t) * t.amount);
+    byCategory.set(t.category, (byCategory.get(t.category) ?? 0) + netSpending(t));
   }
   return {
     months,
@@ -660,9 +677,6 @@ export async function dismissAlert(id: string): Promise<Alert | null> {
  * a credit card, and fees and interest are charged by the card itself.
  */
 const NOT_CARD_PAYABLE: Category[] = ['Housing', 'Fees & interest', ...INCOME_CATEGORIES];
-
-/** Money back for a purchase: a refund, under the spending category it came back to. */
-const isRefund = (t: Transaction) => t.isIncome && !isIncomeCategory(t.category);
 
 /** Purchases and refunds that earn (or take back) rewards, oldest first. */
 const rewardable = (txs: Transaction[]) =>
@@ -978,31 +992,71 @@ export const CHAT_SUGGESTIONS = USE_MOCK
       'Where could I cut back?',
     ];
 
-/** The conversation, oldest first. */
-export async function getChatHistory(): Promise<ChatMessage[]> {
-  if (!USE_MOCK) return apiFetch<ChatMessage[]>('/api/chat');
+// Conversations, like the chat history in Claude or ChatGPT. With the backend Claude names a
+// conversation on its first question; the mock names it after the question.
+
+/** The text on one line, cut at a word boundary with "…" when longer than `limit` (as _shorten in assistant.py). */
+function shorten(text: string, limit: number) {
+  const flat = text.split(/\s+/).filter(Boolean).join(' ');
+  if (flat.length <= limit) return flat;
+  const cut = flat.slice(0, limit - 1);
+  return `${(cut.slice(0, cut.lastIndexOf(' ')) || cut).replace(/[ ,.;:]+$/, '')}…`;
+}
+
+function mockThread(chat: MockChat): ChatThread {
+  const { messages } = chat;
+  const latest = [...messages].reverse().find((m) => m.role === 'assistant') ?? messages[messages.length - 1];
+  return {
+    id: chat.id,
+    title: chat.title,
+    createdAt: messages[0]?.createdAt ?? '',
+    updatedAt: messages[messages.length - 1]?.createdAt ?? '',
+    messageCount: messages.length,
+    preview: latest ? shorten(latest.text, 120) : '',
+  };
+}
+
+function mockChat(id: string): MockChat {
+  const chat = db.chats.find((c) => c.id === id);
+  if (!chat) throw new ApiError(404, 'Conversation not found.');
+  return chat;
+}
+
+/** Every conversation, the latest active first. */
+export async function getChatThreads(): Promise<ChatThread[]> {
+  if (!USE_MOCK) return apiFetch<ChatThread[]>('/api/chats');
   await delay(150);
-  return clone(db.chat);
+  return db.chats.map(mockThread).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/** A conversation with its messages, oldest first; null when there's none with that id. */
+export async function getChatThread(id: string): Promise<ChatThreadDetail | null> {
+  if (!USE_MOCK) return apiFetchOrNull<ChatThreadDetail>(`/api/chats/${encodeURIComponent(id)}`);
+  await delay(150);
+  const chat = db.chats.find((c) => c.id === id);
+  return chat ? clone({ ...mockThread(chat), messages: chat.messages }) : null;
 }
 
 /**
- * Stores the user's message, then returns (and stores) the assistant's reply. With the backend
- * this takes a few seconds to half a minute, while Claude looks things up; when it fails,
- * nothing is stored and the question can be sent again.
+ * Asks the assistant in conversation `threadId`, or starts a new one when it is null, and returns
+ * the reply with its conversation. With the backend this takes a few seconds to half a minute,
+ * while Claude looks things up; when it fails, nothing is stored (a new conversation isn't
+ * created) and the question can be sent again.
  */
-export async function sendChatMessage(text: string): Promise<ChatMessage> {
+export async function sendChatMessage(text: string, threadId: string | null): Promise<ChatReply> {
   if (!USE_MOCK) {
+    const path = threadId ? `/api/chats/${encodeURIComponent(threadId)}/messages` : '/api/chats';
     try {
-      return await apiFetch<ChatMessage>('/api/chat', { method: 'POST', body: JSON.stringify({ text }) });
+      return await apiFetch<ChatReply>(path, { method: 'POST', body: JSON.stringify({ text }) });
     } catch (e) {
-      // A backend started before the assistant existed doesn't have the route.
-      if (e instanceof ApiError && (e.status === 404 || e.status === 405)) {
-        throw new ApiError(e.status, "The server doesn't have the assistant yet. Restart the backend and try again.");
+      // A backend started before conversations existed doesn't have the routes.
+      if (e instanceof ApiError && e.status === 405) {
+        throw new ApiError(e.status, "The server doesn't have chat history yet. Restart the backend and try again.");
       }
       throw e;
     }
   }
-  db.chat.push(message('user', { text }));
+  const chat = threadId ? mockChat(threadId) : { id: `chat_${Date.now().toString(16)}`, title: shorten(text, 60), messages: [] };
   await delay(1200);
   const q = text.toLowerCase();
   let answer = FALLBACK;
@@ -1010,15 +1064,25 @@ export async function sendChatMessage(text: string): Promise<ChatMessage> {
   else if (/restaurant|eating out|dining|takeout|take-out/.test(q)) answer = restaurantsAnswer(db.transactions);
   else if (/\bcard\b|cashback|rewards?/.test(q)) answer = cardAnswer(q, db.transactions, db.cards);
   const reply = message('assistant', answer);
-  db.chat.push(reply);
-  return clone(reply);
+  chat.messages.push(message('user', { text }), reply);
+  if (!threadId) db.chats.push(chat);
+  return clone({ thread: mockThread(chat), message: reply });
 }
 
-/** Deletes the conversation. */
-export async function clearChat(): Promise<void> {
-  if (!USE_MOCK) return apiFetch<void>('/api/chat', { method: 'DELETE' });
+export async function renameChatThread(id: string, title: string): Promise<ChatThread> {
+  if (!USE_MOCK) {
+    return apiFetch<ChatThread>(`/api/chats/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ title }) });
+  }
   await delay(150);
-  db.chat = [];
+  const chat = mockChat(id);
+  chat.title = shorten(title, 60);
+  return mockThread(chat);
+}
+
+export async function deleteChatThread(id: string): Promise<void> {
+  if (!USE_MOCK) return apiFetch<void>(`/api/chats/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  await delay(150);
+  db.chats = db.chats.filter((c) => c.id !== id);
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,8 +1157,8 @@ export async function uploadStatement(file: PickedFile, password?: string): Prom
     fileName: file.name,
     transactionsFound: rows.length,
     range: { from: dates[0] ?? today(), to: dates.at(-1) ?? today() },
-    totalSpent: round2(sum(rows.filter((t) => !t.isIncome).map((t) => t.amount))),
-    totalIncome: round2(sum(rows.filter((t) => t.isIncome).map((t) => t.amount))),
+    totalSpent: round2(sum(rows.map(netSpending))),
+    totalIncome: round2(sum(rows.filter(isEarned).map((t) => t.amount))),
     alreadyInLedger: alreadyThere ? rows.length : 0,
     newTransactions: alreadyThere ? 0 : rows.length,
     balanceCheck: 'not_checked',
@@ -1110,8 +1174,8 @@ async function mockUploadStatement(file: PickedFile): Promise<StatementUpload> {
     fileName: file.name,
     transactionsFound: rows.length,
     range: { from: dates[0], to: dates[dates.length - 1] },
-    totalSpent: round2(sum(rows.filter((t) => !t.isIncome).map((t) => t.amount))),
-    totalIncome: round2(sum(rows.filter((t) => t.isIncome).map((t) => t.amount))),
+    totalSpent: round2(sum(rows.map(netSpending))),
+    totalIncome: round2(sum(rows.filter(isEarned).map((t) => t.amount))),
     alreadyInLedger: rows.length,
     newTransactions: 0,
     balanceCheck: 'passed',

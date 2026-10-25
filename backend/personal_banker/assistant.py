@@ -5,12 +5,15 @@ a period, a card's spending, the transactions behind a number) and answers in
 plain text for a phone chat bubble, optionally with one headline number
 (show_headline) that the app shows as a small card under the answer.
 
-The conversation is kept in library/chat.json as the app shows it. Earlier turns
-go back to Claude as plain text, without the tool calls behind them, so a long
-history stays small and each answer works from fresh numbers.
+Conversations are kept one per file in library/chats/ as the app shows them, each
+with a title that Claude gives it on the first question (name_conversation), like
+the chat history in Claude or ChatGPT. Earlier turns of the same conversation go back
+to Claude as plain text, without the tool calls behind them, so a long history stays
+small and each answer works from fresh numbers.
 """
 
 import json
+import re
 import secrets
 import threading
 from collections import defaultdict
@@ -50,9 +53,14 @@ the records don't reach that far rather than reporting zero spending.
 
 How the data works:
 - Amounts are CAD and always positive; is_income gives the direction. Money in has \
-an income category ({", ".join(INCOME_CATEGORIES)}), except refunds, which are money \
-in under the spending category they came back to. The app's totals count refunds \
-as money in, not as less spending; say so when a refund changes the picture.
+an income category ({", ".join(INCOME_CATEGORIES)}), except refunds: money back for a \
+purchase (a store return, a cancelled order, a fee rebate, a reversed charge), under \
+the spending category it came back to. Refunds aren't income. The ledger links each \
+refund to the purchase it returns, and spending counts only what the user kept: a \
+returned purchase adds nothing and a partly returned one adds what wasn't refunded; a \
+refund with no purchase found comes off spending on its own date. The tools' totals \
+already work this way, so never add refunds to income; mention a return when it \
+explains a total.
 - Spending categories: {", ".join(c for c in APP_CATEGORIES if c not in INCOME_CATEGORIES)}. \
 Food is restaurants, cafés, takeout and delivery; Groceries is separate. Gas & EV \
 charging is fuel and charging stations; Transport is transit, taxis and rideshare; Car \
@@ -95,7 +103,10 @@ no headings, bold, tables or code. Write short paragraphs; for a list, start eac
 line with "• ". Keep it under about 120 words unless they ask for detail. Write \
 money like $1,234.56 and months by name. When the answer comes down to one number, \
 call show_headline with it once, just before you answer. Never write more than the \
-last 4 digits of a card or account number."""
+last 4 digits of a card or account number.
+
+When the context says the conversation is new, also call name_conversation once, \
+alongside your first lookup, with a short title for the user's chat history."""
 
 
 class ChatSummary(AppModel):
@@ -114,20 +125,111 @@ class ChatMessage(AppModel):
     summary: ChatSummary | None = None
 
 
+class ChatThread(AppModel):
+    """ChatThread in src/types.ts: a conversation as the chat history lists it."""
+
+    id: str
+    title: str
+    created_at: str
+    updated_at: str  # when its latest message was added
+    message_count: int
+    preview: str  # the start of its latest answer
+
+
+class ChatThreadDetail(ChatThread):
+    messages: list[ChatMessage]
+
+
+class ChatReply(AppModel):
+    """What asking returns: the answer, and its conversation as the history now lists it."""
+
+    thread: ChatThread
+    message: ChatMessage
+
+
 class AssistantError(RuntimeError):
     """Claude couldn't answer (a refusal or a cut-off reply)."""
 
 
+class UnknownChat(LookupError):
+    """No conversation with that id."""
+
+
 _chat_lock = threading.Lock()
+_CHAT_ID = re.compile(r"chat_[0-9a-f]{12}")
+TITLE_LENGTH = 60
+PREVIEW_LENGTH = 120
 
 
-def history(library: Library) -> list[ChatMessage]:
-    return [ChatMessage.model_validate(m) for m in library.chat()]
+def is_chat_id(chat_id: str) -> bool:
+    return bool(_CHAT_ID.fullmatch(chat_id))
 
 
-def clear(library: Library) -> None:
+def _shorten(text: str, limit: int) -> str:
+    """The text on one line, cut at a word boundary with "…" when longer than `limit`."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 1].rsplit(" ", 1)[0] or text[: limit - 1]
+    return f"{cut.rstrip(' ,.;:')}…"
+
+
+def _new_chat(title: str) -> dict:
+    return {"id": f"chat_{secrets.token_hex(6)}", "title": title, "messages": []}
+
+
+def _move_legacy_chat(library: Library) -> None:
+    """chat.json held the one conversation before there were several; it becomes the first of them."""
+    if (messages := library.legacy_chat()) is None:
+        return
+    if messages:
+        first = next((m["text"] for m in messages if m["role"] == "user"), "Earlier conversation")
+        library.save_chat({**_new_chat(_shorten(first, TITLE_LENGTH)), "messages": messages})
+    library.remove_legacy_chat()
+
+
+def _thread(chat: dict) -> ChatThread:
+    messages = chat["messages"]
+    latest = next((m for m in reversed(messages) if m["role"] == "assistant"), messages[-1] if messages else None)
+    return ChatThread(
+        id=chat["id"],
+        title=chat["title"],
+        created_at=messages[0]["created_at"] if messages else "",
+        updated_at=messages[-1]["created_at"] if messages else "",
+        message_count=len(messages),
+        preview=_shorten(latest["text"], PREVIEW_LENGTH) if latest else "",
+    )
+
+
+def threads(library: Library) -> list[ChatThread]:
+    """Every conversation, the latest active first."""
     with _chat_lock:
-        library.save_chat([])
+        _move_legacy_chat(library)
+        chats = library.chats()
+    return sorted((_thread(c) for c in chats if c["messages"]), key=lambda t: t.updated_at, reverse=True)
+
+
+def thread(library: Library, chat_id: str) -> ChatThreadDetail | None:
+    if not is_chat_id(chat_id) or (chat := library.chat(chat_id)) is None:
+        return None
+    return ChatThreadDetail(**_thread(chat).model_dump(), messages=[ChatMessage.model_validate(m) for m in chat["messages"]])
+
+
+def rename(library: Library, chat_id: str, title: str) -> ChatThread | None:
+    with _chat_lock:
+        if not is_chat_id(chat_id) or (chat := library.chat(chat_id)) is None:
+            return None
+        chat["title"] = _shorten(title, TITLE_LENGTH)
+        library.save_chat(chat)
+    return _thread(chat)
+
+
+def delete(library: Library, chat_id: str) -> bool:
+    with _chat_lock:
+        if not is_chat_id(chat_id) or library.chat(chat_id) is None:
+            return False
+        library.delete_chat(chat_id)
+    return True
 
 
 def _message(role: Literal["user", "assistant"], text: str, summary: ChatSummary | None = None) -> ChatMessage:
@@ -155,8 +257,11 @@ def _money(amount: float) -> float:
     return round(amount, 2)
 
 
-def _make_tools(library: Library, shown: list[ChatSummary]) -> list:
-    """The tools for one question. The ledger is read once: it doesn't change while Claude answers."""
+def _make_tools(library: Library, shown: list[ChatSummary], named: list[str]) -> list:
+    """The tools for one question. The ledger is read once: it doesn't change while Claude answers.
+
+    The tool list is the same for every question, new conversation or not, so it stays in the cache.
+    """
     txs: list[Transaction] = ledger.transactions(library)
     cards = ledger.cards(library)
     names = {c.id: f"{c.nickname} (•••• {c.last4})" for c in cards if not c.is_placeholder}
@@ -220,9 +325,10 @@ def _make_tools(library: Library, shown: list[ChatSummary]) -> list:
 
     @beta_tool
     def spending_summary(start_date: str, end_date: str, card_id: str | None = None, category: str | None = None) -> str:
-        """Totals for a period: money spent and received, spending by category, card and month, and the top merchants.
+        """Totals for a period: spending (net of returns) and income, by category, card and month, and the top merchants.
 
-        Call it once per period to compare periods (e.g. one call per month).
+        Call it once per period to compare periods (e.g. one call per month). Refunds aren't
+        income: they come off the spending they returned (see returns).
 
         Args:
             start_date: First day of the period, YYYY-MM-DD (included).
@@ -231,47 +337,53 @@ def _make_tools(library: Library, shown: list[ChatSummary]) -> list:
             category: Only this category.
         """
         rows = select(start_date, end_date, card_id, category)
-        spent = [t for t in rows if not t.is_income]
-        money_in = [t for t in rows if t.is_income]
+        spending = [(t, amount) for t in rows if (amount := ledger.net_spending(t))]
+        income = [(t, t.amount) for t in rows if t.is_income and not ledger.is_refund(t)]
+        refunds = [t for t in rows if ledger.is_refund(t)]
 
-        def grouped(items: list[Transaction], key, total: float, top: int | None = None) -> list[dict]:
-            groups: dict[str, list[Transaction]] = defaultdict(list)
-            for t in items:
-                groups[key(t)].append(t)
+        def grouped(items: list[tuple[Transaction, float]], key, total: float, top: int | None = None) -> list[dict]:
+            groups: dict[str, list[float]] = defaultdict(list)
+            for t, amount in items:
+                groups[key(t)].append(amount)
             result = sorted(
                 (
                     {
                         "name": name,
-                        "amount": _money(sum(t.amount for t in group)),
-                        "count": len(group),
-                        "share_percent": round(100 * sum(t.amount for t in group) / total) if total else 0,
+                        "amount": _money(sum(amounts)),
+                        "count": len(amounts),
+                        "share_percent": round(100 * sum(amounts) / total) if total else 0,
                     }
-                    for name, group in groups.items()
+                    for name, amounts in groups.items()
                 ),
                 key=lambda g: -g["amount"],
             )
             return result[:top] if top else result
 
-        total_spent = sum(t.amount for t in spent)
-        total_in = sum(t.amount for t in money_in)
+        total_spent = sum(amount for _, amount in spending)
+        total_income = sum(amount for _, amount in income)
         months: dict[str, dict] = {}
         for t in sorted(rows, key=lambda t: t.date):
-            m = months.setdefault(t.date[:7], {"month": t.date[:7], "spent": 0.0, "money_in": 0.0})
-            m["money_in" if t.is_income else "spent"] += t.amount
-        refunds = [t for t in money_in if t.category not in INCOME_CATEGORIES]
+            months.setdefault(t.date[:7], {"month": t.date[:7], "spent": 0.0, "income": 0.0})
+        for key, items in (("spent", spending), ("income", income)):
+            for t, amount in items:
+                months[t.date[:7]][key] += amount
         return json.dumps(
             {
                 "period": {"start_date": start_date, "end_date": end_date},
                 "total_spent": _money(total_spent),
-                "total_money_in": _money(total_in),
-                "net": _money(total_in - total_spent),
-                "refunds_in_money_in": _money(sum(t.amount for t in refunds)),
+                "total_income": _money(total_income),
+                "net": _money(total_income - total_spent),
+                "returns": {
+                    "count": len(refunds),
+                    "amount": _money(sum(t.amount for t in refunds)),
+                    "linked_to_their_purchase": sum(1 for t in refunds if t.refund_of),
+                },
                 "transaction_count": len(rows),
-                "spending_by_category": grouped(spent, lambda t: t.category, total_spent),
-                "spending_by_card": grouped(spent, lambda t: names.get(t.card_id, t.card_id), total_spent),
-                "spending_by_month": [{**m, "spent": _money(m["spent"]), "money_in": _money(m["money_in"])} for m in months.values()],
-                "money_in_by_category": grouped(money_in, lambda t: t.category, total_in),
-                "top_merchants": grouped(spent, lambda t: t.merchant, total_spent, top=10),
+                "spending_by_category": grouped(spending, lambda t: t.category, total_spent),
+                "spending_by_card": grouped(spending, lambda t: names.get(t.card_id, t.card_id), total_spent),
+                "spending_by_month": [{**m, "spent": _money(m["spent"]), "income": _money(m["income"])} for m in months.values()],
+                "income_by_category": grouped(income, lambda t: t.category, total_income),
+                "top_merchants": grouped(spending, lambda t: t.merchant, total_spent, top=10),
             },
             ensure_ascii=False,
         )
@@ -308,6 +420,17 @@ def _make_tools(library: Library, shown: list[ChatSummary]) -> list:
         ]
         rows.sort(key=(lambda t: -t.amount) if sort == "largest" else (lambda t: t.date), reverse=sort == "newest")
         shown_rows = rows[: max(1, min(limit, MAX_TRANSACTIONS))]
+        by_id = {t.id: t for t in txs}
+
+        def returns(t: Transaction) -> dict:
+            """How a refund or a returned purchase is linked to the other side."""
+            if ledger.is_refund(t):
+                purchase = by_id.get(t.refund_of or "")
+                return {"is_refund": True, "returns_purchase_on": purchase.date if purchase else None}
+            if t.refund_ids:
+                return {"returned_amount": t.refunded_amount, "returned_on": [by_id[r].date for r in t.refund_ids if r in by_id]}
+            return {}
+
         return json.dumps(
             {
                 "matching": len(rows),
@@ -322,6 +445,7 @@ def _make_tools(library: Library, shown: list[ChatSummary]) -> list:
                         "category": t.category,
                         "card": names.get(t.card_id, t.card_id),
                         "description": t.raw_description,
+                        **returns(t),
                     }
                     for t in shown_rows
                 ],
@@ -393,8 +517,8 @@ def _make_tools(library: Library, shown: list[ChatSummary]) -> list:
     def budgets_and_goal(month: str) -> str:
         """The user's monthly budgets with what they spent against each in a month, and their savings goal's progress.
 
-        A budget's spent counts purchases only, as the app's Budgets list does. savings_goal is
-        null when they haven't set one.
+        A budget's spent is purchases less what was returned, as the app's Budgets list counts it.
+        savings_goal is null when they haven't set one.
 
         Args:
             month: The month to check the budgets for, YYYY-MM.
@@ -402,8 +526,8 @@ def _make_tools(library: Library, shown: list[ChatSummary]) -> list:
         first = _day(f"{month}-01", "month")[:7]
         spent: dict[str, float] = defaultdict(float)
         for t in txs:
-            if not t.is_income and t.date.startswith(first):
-                spent[t.category] += t.amount
+            if t.date.startswith(first):
+                spent[t.category] += ledger.net_spending(t)
         saved_goal = planning.goal(library)
         return json.dumps(
             {
@@ -435,15 +559,27 @@ def _make_tools(library: Library, shown: list[ChatSummary]) -> list:
         shown[:] = [ChatSummary(value=value[:24], label=label[:60], tone=tone)]
         return "Shown."
 
-    return [list_cards, spending_summary, find_transactions, cashback, budgets_and_goal, show_headline]
+    @beta_tool
+    def name_conversation(title: str) -> str:
+        """Names this conversation in the user's chat history. Call it once, only in a new conversation.
+
+        Args:
+            title: 2 to 6 words saying what the conversation is about, in sentence case, without quotes or a final period, e.g. "October spending vs September" or "Best card for groceries".
+        """
+        if clean := title.strip().strip("\"'").rstrip("."):
+            named[:] = [clean]
+        return "Named."
+
+    return [list_cards, spending_summary, find_transactions, cashback, budgets_and_goal, show_headline, name_conversation]
 
 
 # ---------------------------------------------------------------------------
 # Asking
 
 
-def _context(today: date) -> str:
-    return f"Today is {today.strftime('%A')} {today.isoformat()}."
+def _context(today: date, new: bool) -> str:
+    context = f"Today is {today.strftime('%A')} {today.isoformat()}."
+    return f"{context} This is a new conversation: name it with name_conversation." if new else context
 
 
 def _past_turns(messages: list[ChatMessage]) -> list[dict]:
@@ -460,14 +596,24 @@ def _past_turns(messages: list[ChatMessage]) -> list[dict]:
     return turns
 
 
-def ask(client: anthropic.Anthropic, library: Library, question: str) -> ChatMessage:
-    """Answers the question, saves it and the answer to the chat, and returns the answer.
+def ask(client: anthropic.Anthropic, library: Library, question: str, chat_id: str | None = None) -> ChatReply:
+    """Answers the question in conversation `chat_id`, or in a new one when it is None, and saves
+    the question and the answer to it. A new conversation is named by Claude (name_conversation),
+    else after the question.
 
-    Raises AssistantError when Claude can't answer, and anthropic.APIError when the call fails;
-    neither saves anything, so the question can be asked again.
+    Raises UnknownChat for an unknown chat_id, AssistantError when Claude can't answer, and
+    anthropic.APIError when the call fails; none of them saves anything (a new conversation isn't
+    created), so the question can be asked again.
     """
+    if chat_id is None:
+        chat = _new_chat(_shorten(question, TITLE_LENGTH))
+    elif not is_chat_id(chat_id) or (chat := library.chat(chat_id)) is None:
+        raise UnknownChat(chat_id)
+    past = [ChatMessage.model_validate(m) for m in chat["messages"]]
+
     shown: list[ChatSummary] = []
-    messages = [*_past_turns(history(library)), {"role": "user", "content": question}]
+    named: list[str] = []
+    messages = [*_past_turns(past), {"role": "user", "content": question}]
     runner = client.beta.messages.tool_runner(
         model=MODEL,
         max_tokens=MAX_TOKENS,
@@ -477,8 +623,8 @@ def ask(client: anthropic.Anthropic, library: Library, question: str) -> ChatMes
         output_config={"effort": EFFORT},
         # The cached prefix covers the tools, the instructions and the conversation so far.
         cache_control={"type": "ephemeral"},
-        system=[{"type": "text", "text": SYSTEM_PROMPT}, {"type": "text", "text": _context(date.today())}],
-        tools=_make_tools(library, shown),
+        system=[{"type": "text", "text": SYSTEM_PROMPT}, {"type": "text", "text": _context(date.today(), new=not past)}],
+        tools=_make_tools(library, shown, named),
         messages=messages,
     )
     final = runner.until_done()
@@ -492,6 +638,13 @@ def ask(client: anthropic.Anthropic, library: Library, question: str) -> ChatMes
         raise AssistantError(f"I couldn't put an answer together (stop reason: {final.stop_reason}). Try again.")
 
     reply = _message("assistant", text, shown[0] if shown else None)
+    added = [_message("user", question).model_dump(), reply.model_dump()]
     with _chat_lock:
-        library.save_chat([*library.chat(), _message("user", question).model_dump(), reply.model_dump()])
-    return reply
+        # Re-read: the conversation may have been renamed while Claude answered.
+        saved = library.chat(chat["id"]) if past else None
+        current = saved or chat
+        if not past and named:
+            current["title"] = _shorten(named[0], TITLE_LENGTH)
+        current["messages"] = [*current["messages"], *added]
+        library.save_chat(current)
+    return ChatReply(thread=_thread(current), message=reply)

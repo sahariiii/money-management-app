@@ -16,14 +16,37 @@ import {
   Screen,
   ReceiptDetails,
   SectionHeader,
+  TransactionRow,
   useToast,
 } from '@/components';
 import { colors, fontFamily, fontSize, fontWeight, radius, spacing, typography } from '@/constants/theme';
 import { useAsync } from '@/hooks/use-async';
 import { ApiError, deleteReceipt, deleteTransaction, getCards, getReceipt, getTransaction, updateCategory } from '@/lib/api';
-import { formatShortDate } from '@/lib/dates';
+import { formatMonth, formatShortDate } from '@/lib/dates';
 import { formatMoney, maskCard } from '@/lib/format';
-import { CASH_CARD_ID, EXPENSE_CATEGORIES, INCOME_CATEGORIES, type Category } from '@/types';
+import { isRefund, netSpending, RETURN_DAYS, returnStatus } from '@/lib/refunds';
+import { CASH_CARD_ID, EXPENSE_CATEGORIES, INCOME_CATEGORIES, type Category, type Transaction } from '@/types';
+
+/** How a refund or a returned purchase counts, in a sentence; `purchase` is a refund's linked purchase. */
+function returnMessage(t: Transaction, purchase: Transaction | null | undefined): string {
+  if (isRefund(t)) {
+    if (!t.refundOf) {
+      return (
+        `Money back from ${t.merchant}. It isn't income: it comes off your ${t.category} spending for ` +
+        `${formatMonth(t.date.slice(0, 7))}. The purchase it returns isn't in your statements: the app looks for a ` +
+        `${t.merchant} purchase of at least this amount in the ${RETURN_DAYS} days before.`
+      );
+    }
+    if (!purchase) return `Money back for an earlier ${t.merchant} purchase. It isn't income: it comes off that purchase.`;
+    const kept = netSpending(purchase);
+    return kept > 0.005
+      ? `Money back for your ${t.merchant} purchase of ${formatMoney(purchase.amount)}. It isn't income: that purchase now counts ${formatMoney(kept)} of spending.`
+      : `Money back for your ${t.merchant} purchase. It isn't income, and that purchase no longer counts as spending.`;
+  }
+  return returnStatus(t) === 'returned'
+    ? 'All of it came back, so it no longer counts as spending.'
+    : `${formatMoney(t.refundedAmount ?? 0)} came back, so it counts ${formatMoney(netSpending(t))} of spending.`;
+}
 
 export default function TransactionDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -31,6 +54,9 @@ export default function TransactionDetail() {
   const cards = useAsync(getCards);
   const receiptId = tx.data?.receiptId ?? null;
   const receipt = useAsync(() => (receiptId ? getReceipt(receiptId) : Promise.resolve(null)), receiptId ?? '');
+  // A refund's purchase, or a purchase's refunds.
+  const relatedIds = tx.data ? (tx.data.refundOf ? [tx.data.refundOf] : (tx.data.refundIds ?? [])) : [];
+  const related = useAsync(() => Promise.all(relatedIds.map(getTransaction)), relatedIds.join(','));
 
   const [pending, setPending] = useState<Category | null>(null);
   const [saving, setSaving] = useState(false);
@@ -67,6 +93,9 @@ export default function TransactionDetail() {
         ? 'Unknown card'
         : '…';
   const fromReceipt = t.source === 'receipt';
+  const refund = isRefund(t);
+  const returned = returnStatus(t);
+  const linked = (related.data ?? []).filter((r): r is Transaction => !!r);
 
   const remove = async () => {
     setDeleting(true);
@@ -121,11 +150,19 @@ export default function TransactionDetail() {
       <View style={styles.hero}>
         <CategoryBadge category={t.category} size="lg" />
         <Text style={styles.merchant}>{t.merchant}</Text>
-        <Text style={[styles.amount, { color: t.isIncome ? colors.income : colors.expense }]}>
+        <Text
+          style={[
+            styles.amount,
+            { color: refund || returned === 'returned' ? colors.muted : t.isIncome ? colors.income : colors.expense },
+            returned === 'returned' && styles.struck,
+          ]}>
           {t.isIncome ? '+' : '−'}
           {formatMoney(t.amount, t.currency)}
         </Text>
-        <Text style={styles.muted}>{formatShortDate(t.date)}</Text>
+        <Text style={styles.muted}>
+          {formatShortDate(t.date)}
+          {refund ? ' · Return' : returned === 'returned' ? ' · Returned' : returned ? ' · Partly returned' : ''}
+        </Text>
       </View>
 
       <Card>
@@ -156,6 +193,31 @@ export default function TransactionDetail() {
         <DetailRow label="Category" value={t.category} />
       </Card>
 
+      {(refund || returned) && (
+        <Card>
+          <SectionHeader title={refund ? 'Return' : returned === 'returned' ? 'Returned' : 'Partly returned'} />
+          <Text style={styles.muted}>{returnMessage(t, refund ? linked[0] : null)}</Text>
+          {relatedIds.length > 0 &&
+            (!related.data ? (
+              <Loading />
+            ) : (
+              linked.map((r) => (
+                <TransactionRow
+                  key={r.id}
+                  merchant={r.merchant}
+                  category={r.category}
+                  subtitle={refund ? `The purchase · ${formatShortDate(r.date)}` : `Returned · ${formatShortDate(r.date)}`}
+                  amount={r.amount}
+                  isIncome={r.isIncome}
+                  variant={isRefund(r) ? 'refund' : returnStatus(r) === 'returned' ? 'returned' : undefined}
+                  currency={r.currency}
+                  onPress={() => router.push(`/transaction/${r.id}`)}
+                />
+              ))
+            ))}
+        </Card>
+      )}
+
       {receiptId &&
         (receipt.data ? (
           <ReceiptDetails
@@ -174,7 +236,14 @@ export default function TransactionDetail() {
         ) : null)}
 
       <Card>
-        <SectionHeader title="Category" subtitle="Wrong category? Pick the right one." />
+        <SectionHeader
+          title="Category"
+          subtitle={
+            refund
+              ? 'Wrong category? Pick the right one. Not money back for a purchase? Pick an income category.'
+              : 'Wrong category? Pick the right one.'
+          }
+        />
         <View style={styles.chips}>
           {options.map((c) => (
             <Chip key={c} label={c} selected={(pending ?? t.category) === c} onPress={() => pick(c)} />
@@ -230,6 +299,7 @@ const styles = StyleSheet.create({
   hero: { alignItems: 'center', gap: spacing.xs, paddingVertical: spacing.md },
   merchant: { ...typography.heading, marginTop: spacing.sm, textAlign: 'center' },
   amount: typography.amount,
+  struck: { textDecorationLine: 'line-through' },
   muted: typography.muted,
   caption: typography.caption,
   cleanup: { gap: spacing.xs },

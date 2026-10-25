@@ -9,9 +9,11 @@ import { useLayout } from '@/hooks/use-layout';
 import { getCards, getStatements, getTransactions, resolveRange, today } from '@/lib/api';
 import { addDays, formatShortDate, isISODate } from '@/lib/dates';
 import { formatMoney, maskCard } from '@/lib/format';
+import { isEarned, isRefund, netSpending, returnStatus } from '@/lib/refunds';
 import {
   CASH_CARD_ID,
   CATEGORIES,
+  type Card as CardType,
   type Category,
   type DateRange,
   type RangePreset,
@@ -99,6 +101,29 @@ function unmatchedMessage(list: Statement[]) {
   return `${which}. Until then ${theirs} transactions are under "Unmatched statements". Add the account number to the right card (Cards → Edit) to link them.`;
 }
 
+/**
+ * "Shopping · •••• 7173", or for returns "Return of Oct 11 purchase · •••• 7173", "Returned · Shopping"
+ * or "$18.08 returned · Shopping". `byId` finds a refund's purchase when it is in the list too.
+ */
+function subtitleFor(t: Transaction, card: CardType | undefined, byId: Map<string, Transaction>) {
+  let what: string = t.category;
+  const status = returnStatus(t);
+  if (isRefund(t)) {
+    const purchase = t.refundOf ? byId.get(t.refundOf) : undefined;
+    what = !t.refundOf
+      ? `Refund · ${t.category}`
+      : purchase
+        ? `Return of ${formatShortDate(purchase.date)} purchase`
+        : 'Return of an earlier purchase';
+  } else if (status === 'returned') {
+    what = `Returned · ${t.category}`;
+  } else if (status === 'partly-returned') {
+    what = `${formatMoney(t.refundedAmount ?? 0)} returned · ${t.category}`;
+  }
+  if (card) return `${what} · ${maskCard(card.last4)}`;
+  return t.cardId === CASH_CARD_ID ? `${what} · Cash` : what;
+}
+
 function dayLabel(date: string) {
   const now = today();
   if (date === now) return `Today · ${formatShortDate(date)}`;
@@ -128,8 +153,11 @@ export default function Transactions() {
 
   const cardById = new Map((cards.data ?? []).map((c) => [c.id, c]));
   const list = txs.data ?? [];
-  const spent = list.filter((t) => !t.isIncome).reduce((s, t) => s + t.amount, 0);
-  const income = list.filter((t) => t.isIncome).reduce((s, t) => s + t.amount, 0);
+  const byId = new Map(list.map((t) => [t.id, t]));
+  // Returns aren't income: they come off spending (netSpending), so a returned purchase adds nothing.
+  const spent = Math.max(0, list.reduce((s, t) => s + netSpending(t), 0));
+  const income = list.filter(isEarned).reduce((s, t) => s + t.amount, 0);
+  const returned = list.filter(isRefund).reduce((s, t) => s + t.amount, 0);
   const hasFilters = !!cardId || !!category;
 
   return (
@@ -197,35 +225,28 @@ export default function Transactions() {
                 <Text style={styles.income}>+{formatMoney(income)}</Text>
               </>
             )}
+            {returned > 0 && ` · ${formatMoney(returned)} returned`}
           </Text>
 
           {groupByDate(list).map((g) => (
             <View key={g.date} style={styles.group}>
               <Text style={styles.groupHeader}>{dayLabel(g.date)}</Text>
               <Card style={styles.groupCard}>
-                {g.items.map((t, i) => {
-                  const card = cardById.get(t.cardId);
-                  return (
-                    <Fragment key={t.id}>
-                      {i > 0 && <Divider inset={layout.avatarSize + spacing.md} />}
-                      <TransactionRow
-                        merchant={t.merchant}
-                        category={t.category}
-                        subtitle={
-                          card
-                            ? `${t.category} · ${maskCard(card.last4)}`
-                            : t.cardId === CASH_CARD_ID
-                              ? `${t.category} · Cash`
-                              : t.category
-                        }
-                        amount={t.amount}
-                        isIncome={t.isIncome}
-                        currency={t.currency}
-                        onPress={() => router.push(`/transaction/${t.id}`)}
-                      />
-                    </Fragment>
-                  );
-                })}
+                {g.items.map((t, i) => (
+                  <Fragment key={t.id}>
+                    {i > 0 && <Divider inset={layout.avatarSize + spacing.md} />}
+                    <TransactionRow
+                      merchant={t.merchant}
+                      category={t.category}
+                      subtitle={subtitleFor(t, cardById.get(t.cardId), byId)}
+                      amount={t.amount}
+                      isIncome={t.isIncome}
+                      variant={isRefund(t) ? 'refund' : returnStatus(t) === 'returned' ? 'returned' : undefined}
+                      currency={t.currency}
+                      onPress={() => router.push(`/transaction/${t.id}`)}
+                    />
+                  </Fragment>
+                ))}
               </Card>
             </View>
           ))}
