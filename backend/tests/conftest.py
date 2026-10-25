@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from personal_banker import api
 from personal_banker.datastore import Storage
+from personal_banker.surreal import SurrealDB, SurrealStorage
 
 TESTS = Path(__file__).parent
 # A made-up library in the layout from before data was kept per user, and the API's responses
@@ -15,15 +16,35 @@ LEGACY_EXPECTED = TESTS / "fixtures" / "legacy_expected.json"
 
 
 @pytest.fixture
-def storage(tmp_path) -> Storage:
-    return Storage(tmp_path / "library")
+def surreal_db():
+    """An empty SurrealDB, in memory."""
+    db = SurrealDB("mem://", "test", "test")
+    yield db
+    db.close()
+
+
+@pytest.fixture(params=["json", "surreal"])
+def make_storage(request):
+    """make_storage(root): a Storage over that folder, with records in JSON files or in SurrealDB.
+
+    Called again on the same root, it opens the same records afresh, as a new process would.
+    """
+    if request.param == "json":
+        return Storage
+    db = request.getfixturevalue("surreal_db")
+    return lambda root: SurrealStorage(root, db)
 
 
 @pytest.fixture
-def legacy_storage(tmp_path) -> Storage:
+def storage(tmp_path, make_storage) -> Storage:
+    return make_storage(tmp_path / "library")
+
+
+@pytest.fixture
+def legacy_storage(tmp_path, make_storage) -> Storage:
     """A copy of the made-up legacy library, not yet migrated."""
     shutil.copytree(LEGACY_FIXTURE, tmp_path / "library")
-    return Storage(tmp_path / "library")
+    return make_storage(tmp_path / "library")
 
 
 @pytest.fixture

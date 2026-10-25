@@ -43,7 +43,7 @@ if EXTRACTION_ENGINE == "claude":
     how = "Claude detects its layout, then transcribes it using that layout"
 else:
     how = "PaddleOCR-VL detects its layout and transcribes it locally on your GPU"
-st.caption(f"Each page is rendered to an image, then {how}. Everything is saved under {library.root}/.")
+st.caption(f"Each page is rendered to an image, then {how}. Everything is saved under {library.location}.")
 
 # --- Add a document -----------------------------------------------------------
 

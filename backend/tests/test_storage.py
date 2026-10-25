@@ -5,9 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from personal_banker import api, ledger, service
+from personal_banker import api, assistant, ledger, service
+from personal_banker.datastore import Storage
 from personal_banker.docai.render import PageImage
 from personal_banker.migrate import MigrationError, migrate_legacy
+from personal_banker.records import ChatMessage
 
 
 def row(day, vendor, amount, category="Groceries", description=None):
@@ -94,13 +96,13 @@ def add_doc(store, name="statement.pdf"):
     return store.files.add(name, name.encode(), [page])
 
 
-def test_job_status_survives_a_restart(storage, client_as, monkeypatch):
+def test_job_status_survives_a_restart(storage, make_storage, client_as, monkeypatch):
     store = storage.store("user_a")
     doc = add_doc(store)
     store.update_statement(doc.id, status="running", stage="Reading the pages.")
 
     # A new process (fresh Storage) still knows it was mid-way.
-    reopened = type(storage)(storage.root)
+    reopened = make_storage(storage.root)
     client = client_as(reopened, "user_a")
     assert client.get(f"/api/statements/{doc.id}").json()["status"] == "processing"
 
@@ -112,14 +114,14 @@ def test_job_status_survives_a_restart(storage, client_as, monkeypatch):
     assert queued == [(api._process, "user_a", doc.id)]
 
 
-def test_why_a_statement_stopped_is_kept(storage, client_as, monkeypatch):
+def test_why_a_statement_stopped_is_kept(storage, make_storage, client_as, monkeypatch):
     store = storage.store("user_a")
     doc = add_doc(store)
     monkeypatch.setattr(api, "storage", storage)
     monkeypatch.setattr(api, "engine_problem", lambda engine: "No engine here.")
     api._process("user_a", doc.id)
 
-    client = client_as(type(storage)(storage.root), "user_a")
+    client = client_as(make_storage(storage.root), "user_a")
     statement = client.get(f"/api/statements/{doc.id}").json()
     assert (statement["status"], statement["message"]) == ("incomplete", "No engine here.")
 
@@ -153,18 +155,27 @@ def test_memory_store(storage):
         memory.remember("   ")
 
 
-def test_conversations_are_per_user(storage, client_as, monkeypatch):
+OLD_CHAT = [
+    {"id": "msg_1", "role": "user", "text": "How much on food in August?", "created_at": "2026-09-01T10:00:00+00:00"},
+    {"id": "msg_2", "role": "assistant", "text": "$120.00.", "created_at": "2026-09-01T10:00:05+00:00"},
+]
+
+
+def test_old_single_chat_becomes_a_conversation(tmp_path, client_as):
     # A user's chat.json from before there were several conversations becomes the first of them.
+    storage = Storage(tmp_path / "library")
     store = storage.store("user_a")
-    old = [
-        {"id": "msg_1", "role": "user", "text": "How much on food in August?", "created_at": "2026-09-01T10:00:00+00:00"},
-        {"id": "msg_2", "role": "assistant", "text": "$120.00.", "created_at": "2026-09-01T10:00:05+00:00"},
-    ]
-    (store.folder / "chat.json").write_text(json.dumps({"messages": old}))
+    (store.folder / "chat.json").write_text(json.dumps({"messages": OLD_CHAT}))
+    [moved] = client_as(storage, "user_a").get("/api/chats").json()
+    assert moved["title"] == "How much on food in August?" and moved["messageCount"] == 2
+    assert not (store.folder / "chat.json").exists()
+
+
+def test_conversations_are_per_user(storage, client_as, monkeypatch):
+    storage.store("user_a").save_chat(assistant.legacy_conversation([ChatMessage.model_validate(m) for m in OLD_CHAT]))
     client = client_as(storage, "user_a")
     [moved] = client.get("/api/chats").json()
     assert moved["title"] == "How much on food in August?" and moved["messageCount"] == 2
-    assert not (store.folder / "chat.json").exists()
 
     # Claude stands in: it answers without calling a tool.
     answer = SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="You spent $80.00.")])

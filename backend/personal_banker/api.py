@@ -35,13 +35,14 @@ from .docai.pipeline import EXTRACTION_ENGINE
 from .ledger import AppCategory, AppModel, Card, CardInput, CategoryUpdate, RewardRule, Transaction
 from .llm import ExtractionError, make_client, start_trace
 from .pipeline import MAX_BYTES, PasswordRequired, StatementError, prepare_pdf
-from .datastore import DataStore, Storage
+from .datastore import DataStore, open_storage
 from .records import StatementRecord
 from .service import engine_problem, has_api_key, process_document
 from .store import StoredDocument
+from .surreal import SurrealStorage
 
 log = logging.getLogger("uvicorn.error")
-storage = Storage()
+storage = open_storage()
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +255,15 @@ async def lifespan(_: FastAPI):
             storage.root,
             MIGRATE_HINT.format(user="<Clerk user id>"),
         )
+    if isinstance(storage, SurrealStorage):
+        log.info("Records and statement files are in SurrealDB at %s (%s/%s).", storage.db.url, storage.db.namespace, storage.db.database)
+        if uncopied := storage.uncopied_json_users():
+            log.warning(
+                "%s has records or statement files under %s that SurrealDB doesn't have; nobody sees them until copied: %s",
+                ", ".join(uncopied),
+                storage.root,
+                "uv run python -m personal_banker.copy_to_surreal",
+            )
     for user_id in storage.user_ids():
         _resume_and_backfill(storage.store(user_id))
     yield

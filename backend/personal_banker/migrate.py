@@ -8,19 +8,19 @@ library/) is copied into that user's folder (datastore.py), so nothing is delete
 Transactions keep the ids the app knew them by, so links and attached receipts
 still work; transactions added from now on get ids of their own. Afterwards
 library/.migrated records who got the data, and the old files can be deleted.
+With SURREALDB_URL set (.env), the records go straight into SurrealDB (surreal.py).
 Stop the API server first.
 """
 
 import argparse
 import json
-import shutil
 from datetime import datetime
 from pathlib import Path
 
 from . import assistant, ledger
-from .datastore import DEFAULT_ROOT, DataStore, Storage, read_json, write_json
+from .datastore import DEFAULT_ROOT, DataStore, open_storage, read_json, write_json
 from .records import Budget, Card, ChatMessage, ChatRecord, RewardRule, SavingsGoal, ScanRecord, TransactionRecord
-from .store import Library
+from .store import Library, copy_document
 
 
 class MigrationError(RuntimeError):
@@ -36,7 +36,7 @@ def migrate_legacy(legacy_root: Path, store: DataStore) -> dict[str, int]:
 
     # Oldest first, so a row two statements share belongs to the one that brought it first.
     for doc in reversed(legacy.documents()):
-        shutil.copytree(legacy_root / doc.id, store.files.root / doc.id, dirs_exist_ok=True)
+        copy_document(legacy, store.files, doc)
         counts["statements"] += 1
         if (budget := legacy.budget(doc)) is not None:
             # The old ids were the row's place in budget.json; keeping them as plain ids keeps the app's links.
@@ -104,7 +104,7 @@ def main() -> None:
     parser.add_argument("--library", type=Path, default=DEFAULT_ROOT, help="The library folder (default: %(default)s).")
     args = parser.parse_args()
 
-    storage = Storage(args.library)
+    storage = open_storage(args.library)
     if not storage.unmigrated_legacy():
         raise SystemExit(f"Nothing to migrate in {args.library}.")
     try:

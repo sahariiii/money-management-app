@@ -10,7 +10,7 @@ Without a budget workbook, statements are sorted into the app's own categories.
 import argparse
 from pathlib import Path
 
-from ..datastore import DEFAULT_ROOT, Storage, local_user
+from ..datastore import DEFAULT_ROOT, local_user, open_storage
 from ..llm import make_client
 from ..service import CategorizeSkipped, save_categorized, workbook_setup
 from . import DEFAULT_WORKBOOK, budget_record, categorize_statement, load_budget_setup, to_xlsx
@@ -25,7 +25,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("output/budget_rows.xlsx"))
     args = parser.parse_args()
 
-    storage = Storage(args.library)
+    storage = open_storage(args.library)
     store = storage.store(args.user or local_user(storage))
     library = store.files
     transcribed = [d for d in library.documents() if library.markdown(d) is not None]

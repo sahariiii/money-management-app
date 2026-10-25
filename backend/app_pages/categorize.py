@@ -52,7 +52,7 @@ st.title("Budget categories")
 st.caption(
     "Sorts the transactions in your transcribed statements into the categories from your budget workbook "
     "(or the app's own, without one). Results and your edits are saved with each statement under "
-    f"{library.root}/ and go into the app's ledger."
+    f"{library.location} and go into the app's ledger."
 )
 
 # --- Inputs: transcribed documents and the budget workbook -------------------

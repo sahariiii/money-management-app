@@ -9,19 +9,24 @@ import anthropic
 import streamlit as st
 
 from .categorize import BudgetSetup, load_budget_setup
-from .datastore import DataStore, Storage, local_user
+from .datastore import DataStore, Storage, local_user, open_storage
 from .llm import make_client
 from .store import Library
 
 
 @st.cache_resource
+def _storage() -> Storage:
+    return open_storage()
+
+
+@st.cache_resource
 def _store(user_id: str) -> DataStore:
-    return Storage().store(user_id)
+    return _storage().store(user_id)
 
 
 def get_store() -> DataStore:
     try:
-        user_id = local_user(Storage())
+        user_id = local_user(_storage())
     except RuntimeError as e:
         st.error(str(e), title="Whose data?")
         st.stop()

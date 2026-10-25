@@ -18,7 +18,8 @@ nothing else reads or writes their records. JsonDataStore keeps them as JSON fil
         receipts/<scan id>.json/.jpg scanned receipts and their photos
         memory.json                  the assistant's long-term memory (memory.py)
 
-A database-backed store implements the same DataStore protocol; callers don't change.
+SurrealDataStore (surreal.py) implements the same protocol over SurrealDB, statement
+files included; open_storage() picks it when SURREALDB_URL is set.
 """
 
 import json
@@ -40,7 +41,7 @@ from .records import (
     StatementRecord,
     TransactionRecord,
 )
-from .store import Library
+from .store import Library, StatementFiles, write_file
 
 DEFAULT_ROOT = Path(os.environ.get("PERSONAL_BANKER_LIBRARY", "library"))
 # The user Streamlit and the command-line tools act as (see local_user).
@@ -51,7 +52,7 @@ class DataStore(Protocol):
     """One user's records. Every method only ever sees that user's data."""
 
     user_id: str
-    files: Library  # the user's statement files
+    files: StatementFiles  # the user's statement files
 
     # --- Statements ------------------------------------------------------------
     def statements(self) -> list[StatementRecord]: ...
@@ -119,14 +120,6 @@ class DataStore(Protocol):
 
 # ---------------------------------------------------------------------------
 # JSON files
-
-
-def write_file(path: Path, data: str | bytes) -> None:
-    """Write via a temporary file so a crash never leaves half a file behind."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_bytes(data.encode("utf-8") if isinstance(data, str) else data)
-    tmp.replace(path)
 
 
 def write_json(path: Path, value: Any) -> None:
@@ -418,6 +411,14 @@ class Storage:
             return False
         legacy = ("cards.json", "merchant_rules.json", "receipts.json", "chat.json", "chats", "plan.json")
         return any((self.root / name).exists() for name in legacy) or any(self.root.glob("*/meta.json"))
+
+
+def open_storage(root: Path | str = DEFAULT_ROOT) -> Storage:
+    """Records and statement files in SurrealDB when SURREALDB_URL is set (.env), else in JSON files and folders under `root`."""
+    from .surreal import SurrealDB, SurrealStorage
+
+    db = SurrealDB.from_env()
+    return SurrealStorage(root, db) if db else Storage(root)
 
 
 def local_user(storage: Storage) -> str:

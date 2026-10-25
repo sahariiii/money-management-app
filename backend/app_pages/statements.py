@@ -33,7 +33,7 @@ for doc in library.documents():
     )
 
 if not saved:
-    st.info(f"No statements saved under {library.root}/ yet.", title="No statements yet")
+    st.info(f"No statements saved under {library.location} yet.", title="No statements yet")
     st.page_link("app_pages/document_viewer.py", label="Open the document viewer", icon=":material/document_scanner:")
     st.stop()
 

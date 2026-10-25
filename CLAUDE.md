@@ -7,7 +7,7 @@ assistant that remembers spending habits. Later the backend will be FastAPI (Pyt
 Clerk for auth, SurrealDB for the ledger, SurrealDB Agent Memory for long-term memory.
 
 Current phase: UI + real auth (Clerk) + the Python backend in backend/ (FastAPI; each user's
-records go through a DataStore, JSON files for now, so SurrealDB can replace it without touching callers). Transactions, cards with their reward
+records go through a DataStore: JSON files, or SurrealDB when SURREALDB_URL is set in .env). Transactions, cards with their reward
 rules (add, edit, delete), statement upload, receipt scanning, budgets, the savings goal and the
 assistant chat come from the backend; bills and alerts aren't in the backend yet, so with it they
 start empty (additions last until reload) and the full demo exists only in mock mode.
@@ -108,11 +108,25 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
   cards + reward rules, merchant rules, budgets + goal, receipt scans, chat) and `JsonDataStore`, which
   keeps them as JSON under library/users/<Clerk user id>/ (layout in its docstring). `Storage` opens a
   user's store (`store(user_id)`, `memory(user_id)`, `user_ids()`). All read-change-write file logic
-  lives here; ledger.py/planning.py/assistant.py only call record methods. A SurrealDB store implements
-  the same Protocol. backend/personal_banker/records.py holds the stored record models (and the shared
+  lives here; ledger.py/planning.py/assistant.py only call record methods. Entry points open storage
+  with `open_storage()` (never `Storage()`; tests do), which returns a SurrealStorage when SURREALDB_URL
+  is set. backend/personal_banker/records.py holds the stored record models (and the shared
   app models: categories, Card, Budget, ChatMessage, re-exported from ledger/planning/assistant).
-  backend/personal_banker/store.py `Library` is just one user's statement files (DataStore.files):
-  PDF, page images, transcriptions, and the categorizer's budget.json.
+  backend/personal_banker/store.py: one user's statement files (DataStore.files, the `StatementFiles`
+  Protocol): PDF, page images, transcriptions, and the categorizer's budget.json. `Library` keeps them
+  in a folder; `copy_document` copies one between any two StatementFiles as stored.
+- backend/personal_banker/surreal.py — SurrealDataStore/SurrealLibrary/SurrealMemoryStore/SurrealStorage:
+  the same Protocols over SurrealDB (SURREALDB_URL, _NAMESPACE, _DATABASE, _USERNAME, _PASSWORD in .env;
+  SDK `surrealdb`, sync WebSocket, one shared connection that reconnects). Records AND statement files
+  live there, nothing on disk, which is what lets the backend run on Render (its disk doesn't last).
+  Tables listed in its docstring; record ids start with the user id, plus an indexed `user` field.
+  Writes go through `_nulls` (the SDK sends None as NONE, which drops the field; CBOR null is stored as
+  NULL), so records read back exactly. The old single chat.json only exists in JSON libraries
+  (legacy_chat() is None here). copy_to_surreal.py copies records (users with none there yet) and
+  statement files (ones it lacks) from library/users/ into it, safe to rerun; the API logs the command
+  while anything on disk is missing there. migrate.py writes straight into it when it is set. Tests run
+  every storage test on both stores (`make_storage` fixture; SurrealDB embedded in memory, `mem://`),
+  and test_surreal.py covers the rest.
 - backend/personal_banker/ledger.py — the user's transactions as the app sees them. import_statement
   stores a statement's budget.json rows as TransactionRecords with ids that never change (`tx_<hex>`;
   rows migrated from before keep their old `<doc>-e003` ids as plain strings — never parse an id).

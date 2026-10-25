@@ -14,7 +14,7 @@ from typing import get_args
 
 from ..llm import make_client
 from ..pipeline import PasswordRequired, prepare_pdf
-from ..datastore import DEFAULT_ROOT, Storage, local_user
+from ..datastore import DEFAULT_ROOT, local_user, open_storage
 from .pipeline import EXTRACTION_ENGINE, Engine, engine_concurrency, extract_page
 from .render import render_pdf
 
@@ -28,7 +28,7 @@ def main() -> None:
     parser.add_argument("--concurrency", type=int, help="Pages processed in parallel (default: 4 for Claude, 1 for PaddleOCR-VL).")
     args = parser.parse_args()
 
-    storage = Storage(args.library)
+    storage = open_storage(args.library)
     library = storage.store(args.user or local_user(storage)).files
     raw = args.pdf.read_bytes()
     try:
@@ -50,7 +50,7 @@ def main() -> None:
                 line += f"; transcription read {result.transcription.cache_read_tokens:,} tokens from cache"
             print(line)
 
-    print(f"Saved to {library.root / doc.id}")
+    print(f"Saved to {library.location} as {doc.id}")
 
 
 if __name__ == "__main__":
