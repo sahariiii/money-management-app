@@ -1,0 +1,35 @@
+# What EAS Build uploads. When this file exists EAS ignores .gitignore, so it repeats its rules,
+# and it leaves out everything the app build doesn't need: the Python backend (its .venv, statements
+# and library alone are gigabytes) and the demo video project.
+
+# Not part of the Expo app (Python virtualenvs ignore themselves in git with their own .gitignore,
+# which EAS does not read)
+backend/
+demo/
+top
+.venv/
+.claude/
+.agents/
+
+# Same as .gitignore
+node_modules/
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+.metro-health-check*
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+.DS_Store
+*.pem
+.env
+.env*.local
+*.tsbuildinfo

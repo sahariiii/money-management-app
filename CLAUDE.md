@@ -210,6 +210,22 @@ This project uses the `src/` layout (import alias `@/*` -> `src/*`):
   user's DataStore. PERSONAL_BANKER_API_TOKEN callers are PERSONAL_BANKER_API_TOKEN_USER (or "api-token");
   with no key and no token set, everyone is "anyone".
 
+## Deploy
+- Backend: Render (free tier: sleeps when idle, the first request takes ~1 min), records in SurrealDB.
+  Render env: the backend vars from .env.example, plus PERSONAL_BANKER_WEB_ORIGINS = the hosted web
+  app's origin (CORS and the Clerk token's azp check, auth.web_origins()), and CLERK_ALLOWED_USER_IDS
+  (invite list: others can sign up but get 403).
+- Expo project: @soltanieh-sisters/money-app (owner in app.json).
+- Web: EAS Hosting, https://soltanieh-sisters-money-app.expo.app. `npx expo export --platform web`
+  (bakes in the EXPO_PUBLIC_* vars from .env), then `npx eas-cli deploy --prod`. Preview deploy URLs
+  have other origins, so the backend rejects them. web.output is "single" (a static SPA): "server"
+  output ran under `npx expo serve` but every page 500'd on EAS Hosting, and SSR only drew the spinner.
+- Native: eas.json. `preview` = Android APK with an install link (`eas build -p android --profile
+  preview`); `production` = store builds (iOS: `eas build -p ios --profile production --auto-submit`
+  to TestFlight). .env isn't uploaded: EXPO_PUBLIC_* vars come from EAS environment variables
+  (preview, production). Bundle id / package: com.setarehsoltanieh.moneyapp. Google sign-in in
+  builds needs `moneyapp://sso-callback` allowlisted in Clerk (Native applications).
+
 ## Gotchas
 - Clerk dashboard settings matter (instance logical-sole-3210, dev): phone number and username are
   off, email verification at sign-up is off, first/last name are on. Turning a requirement back on

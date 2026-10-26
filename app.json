@@ -8,9 +8,14 @@
     "scheme": "moneyapp",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "bundleIdentifier": "com.setarehsoltanieh.moneyapp",
+      "config": {
+        "usesNonExemptEncryption": false
+      }
     },
     "android": {
+      "package": "com.setarehsoltanieh.moneyapp",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -20,7 +25,7 @@
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "output": "server",
+      "output": "single",
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
@@ -36,11 +41,30 @@
       "@clerk/expo",
       "expo-secure-store",
       "expo-web-browser",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Choose a receipt photo to scan and match with your transactions.",
+          "cameraPermission": "Take a photo of a receipt to scan and match with your transactions.",
+          "microphonePermission": false
+        }
+      ],
       "expo-image"
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {
+        "asyncRoutes": {
+          "web": true
+        }
+      },
+      "eas": {
+        "projectId": "a3c99b8b-40e9-4a08-b5dc-95688aef5f68"
+      }
+    },
+    "owner": "soltanieh-sisters"
   }
 }

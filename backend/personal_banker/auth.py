@@ -27,8 +27,18 @@ TOKEN_ENV = "PERSONAL_BANKER_API_TOKEN"
 TOKEN_USER_ENV = "PERSONAL_BANKER_API_TOKEN_USER"
 ALLOWED_USERS_ENV = "CLERK_ALLOWED_USER_IDS"
 
+WEB_ORIGINS_ENV = "PERSONAL_BANKER_WEB_ORIGINS"
+
+
+def web_origins() -> str:
+    """Regex of the browser origins that may call the API: the Expo web app on this computer,
+    plus the hosted web app's origins in PERSONAL_BANKER_WEB_ORIGINS (comma-separated, exact)."""
+    hosted = [re.escape(o.strip().rstrip("/")) for o in os.environ.get(WEB_ORIGINS_ENV, "").split(",") if o.strip()]
+    return "|".join([r"http://(localhost|127\.0\.0\.1)(:\d+)?", *hosted])
+
+
 # A browser session's token names the page's origin in azp; the same origins CORS allows.
-AUTHORIZED_PARTIES = re.compile(r"http://(localhost|127\.0\.0\.1)(:\d+)?")
+AUTHORIZED_PARTIES = re.compile(web_origins())
 # Session tokens live for a minute; allow for a little clock drift.
 LEEWAY_SECONDS = 10
 
@@ -97,5 +107,5 @@ def authorize(token: str | None) -> str:
         raise AuthError(401, f"Invalid session token: {e}") from e
     allowed = {u.strip() for u in os.environ.get(ALLOWED_USERS_ENV, "").split(",") if u.strip()}
     if allowed and user_id not in allowed:
-        raise AuthError(403, "This account isn't allowed to use this server.")
+        raise AuthError(403, "This account doesn't have access yet. Ask the app's owner to add it.")
     return user_id

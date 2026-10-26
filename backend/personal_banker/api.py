@@ -271,10 +271,11 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Personal Banker", lifespan=lifespan)
-# Browsers may only call it from the Expo web app on this computer; the phone app isn't subject to CORS.
+# Browsers may only call it from the Expo web app on this computer or the hosted one
+# (PERSONAL_BANKER_WEB_ORIGINS); the phone app isn't subject to CORS.
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_origin_regex=auth.web_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
